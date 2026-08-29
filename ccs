@@ -14,6 +14,8 @@
 #
 # 供应商名 = cc-switch 界面里的名字，不区分大小写、支持部分匹配。
 set -euo pipefail
+# 防 bash 3.2 在非 UTF-8 locale 下把紧邻变量的多字节字符解析进变量名
+export LC_ALL=en_US.UTF-8
 
 case "${1:-}" in
   "")
@@ -44,7 +46,7 @@ if command -v sqlite3 >/dev/null 2>&1 && [ -f "$HOME/.cc-switch/cc-switch.db" ];
   HIT=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
     "SELECT COUNT(*) FROM providers WHERE app_type='claude' AND name LIKE '%'||'$SAFE'||'%'" 2>/dev/null || echo 1)
   if [ "${HIT:-0}" = "0" ]; then
-    echo "ccs: cc-switch 里没有匹配「$NAME」的 Claude 供应商（名字需与 cc-switch 中一致）" >&2
+    echo "ccs: cc-switch 里没有匹配 ${NAME} 的供应商（需与 cc-switch 中名字一致）" >&2
     exit 1
   fi
 fi

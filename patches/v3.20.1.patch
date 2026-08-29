@@ -1,9 +1,9 @@
 diff --git a/src-tauri/resources/ccs b/src-tauri/resources/ccs
 new file mode 100755
-index 0000000..6c45e1e
+index 0000000..23df4dd
 --- /dev/null
 +++ b/src-tauri/resources/ccs
-@@ -0,0 +1,53 @@
+@@ -0,0 +1,55 @@
 +#!/usr/bin/env bash
 +# ccs — Claude Code 终端级供应商切换
 +# （依赖补丁版 CC Switch Router 运行中，且已开启路由接管）
@@ -20,6 +20,8 @@ index 0000000..6c45e1e
 +#
 +# 供应商名 = cc-switch 界面里的名字，不区分大小写、支持部分匹配。
 +set -euo pipefail
++# 防 bash 3.2 在非 UTF-8 locale 下把紧邻变量的多字节字符解析进变量名
++export LC_ALL=en_US.UTF-8
 +
 +case "${1:-}" in
 +  "")
@@ -50,7 +52,7 @@ index 0000000..6c45e1e
 +  HIT=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
 +    "SELECT COUNT(*) FROM providers WHERE app_type='claude' AND name LIKE '%'||'$SAFE'||'%'" 2>/dev/null || echo 1)
 +  if [ "${HIT:-0}" = "0" ]; then
-+    echo "ccs: cc-switch 里没有匹配「$NAME」的 Claude 供应商（名字需与 cc-switch 中一致）" >&2
++    echo "ccs: cc-switch 里没有匹配 ${NAME} 的供应商（需与 cc-switch 中名字一致）" >&2
 +    exit 1
 +  fi
 +fi
@@ -59,22 +61,20 @@ index 0000000..6c45e1e
 +exec claude --settings "{\"env\":{\"ANTHROPIC_CUSTOM_HEADERS\":\"x-ccs-provider: ${NAME}\"}}" "$@"
 diff --git a/src-tauri/src/ccs_router.rs b/src-tauri/src/ccs_router.rs
 new file mode 100644
-index 0000000..370671c
+index 0000000..9ba56ac
 --- /dev/null
 +++ b/src-tauri/src/ccs_router.rs
-@@ -0,0 +1,98 @@
-+//! 把打包资源中的 ccs 脚本以软链接方式安装到 PATH 目录
+@@ -0,0 +1,85 @@
++//! ccs 脚本安装器：安装到 $HOME/script/bin（用户已加入 PATH）
 +//!
-+//! 每次 app 启动执行：确保资源文件可执行，并在第一个「存在于 PATH 且可写」的
-+//! 候选目录里建立指向它的软链接。链接指向 app 内资源，app 升级后自动跟随；
-+//! app 被移动后链接会失效，但下次启动会自动重建。所有失败只记日志，不阻断启动。
++//! 运行介质判定：尝试 chmod 包内资源——
++//! - 成功 = 正常磁盘运行 → 建立**软链接**指向包内资源（app 升级自动跟随）
++//! - 失败 = 只读卷（DMG 直接运行）→ **拷贝完整脚本内容**（755）
++//! 内容一致则跳过（幂等）。所有失败只记日志，不阻断启动。
 +
 +use std::os::unix::fs::PermissionsExt;
-+use std::path::{Path, PathBuf};
++use std::path::PathBuf;
 +use tauri::Manager;
-+
-+/// 候选安装目录（按优先级）；以 . 开头的相对路径基于用户 HOME
-+const CANDIDATE_DIRS: [&str; 3] = ["/opt/homebrew/bin", "/usr/local/bin", ".local/bin"];
 +
 +pub fn install_on_startup(app: &tauri::AppHandle) {
 +    if !cfg!(unix) {
@@ -88,78 +88,67 @@ index 0000000..370671c
 +        log::warn!("[ccs] 无法解析打包资源 resources/ccs");
 +        return;
 +    };
-+
-+    // 打包过程可能重置权限，确保脚本可执行
-+    if let Ok(meta) = std::fs::metadata(&resource) {
-+        let mut perms = meta.permissions();
-+        if perms.mode() & 0o111 != 0o111 {
-+            perms.set_mode(0o755);
-+            if let Err(e) = std::fs::set_permissions(&resource, perms) {
-+                log::warn!("[ccs] 无法为资源文件添加执行权限: {e}");
-+                return;
-+            }
-+        }
++    let Ok(script) = std::fs::read_to_string(&resource) else {
++        log::warn!("[ccs] 无法读取打包的 ccs 脚本");
++        return;
++    };
++    if !script.starts_with("#!") {
++        log::warn!("[ccs] 打包的 ccs 脚本内容异常，跳过安装");
++        return;
 +    }
-+    let script = match std::fs::read_to_string(&resource) {
-+        Ok(s) if s.starts_with("#!") => s,
-+        _ => {
-+            log::warn!("[ccs] 打包的 ccs 脚本内容异常，跳过安装");
-+            return;
++
++    // 运行介质判定：只读卷（DMG 运行）上 chmod 会失败
++    let on_readonly_volume = match std::fs::metadata(&resource) {
++        Ok(meta) => {
++            let mut perms = meta.permissions();
++            perms.set_mode(0o755);
++            std::fs::set_permissions(&resource, perms).is_err()
 +        }
++        Err(_) => true,
 +    };
 +
-+    let path_env = std::env::var("PATH").unwrap_or_default();
-+    for dir in CANDIDATE_DIRS {
-+        let dir: PathBuf = if let Some(stripped) = dir.strip_prefix('.') {
-+            let home = std::env::var("HOME").unwrap_or_default();
-+            if home.is_empty() {
-+                continue;
-+            }
-+            Path::new(&home).join(stripped)
-+        } else {
-+            PathBuf::from(dir)
-+        };
++    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
++        log::warn!("[ccs] 无法获取 HOME，跳过 ccs 安装");
++        return;
++    };
++    let dir = home.join("script/bin");
++    if let Err(e) = std::fs::create_dir_all(&dir) {
++        log::warn!("[ccs] 无法创建 {}: {e}", dir.display());
++        return;
++    }
++    let link = dir.join("ccs");
 +
-+        // 只安装到「存在 && 已在 PATH」的目录，避免装到用户找不到的地方
-+        if !dir.is_dir() || !path_env.split(':').any(|p| Path::new(p) == dir) {
-+            continue;
-+        }
-+
-+        let link = dir.join("ccs");
-+        if let Ok(current) = std::fs::read_link(&link) {
-+            if current == resource {
-+                log::info!("[ccs] 软链接已是最新: {}", link.display());
-+                return;
-+            }
-+        }
-+        // 已存在同名文件：仅当它是软链接、或内容是脚本文本时才覆盖，避免误伤无关文件
-+        if link.exists() {
-+            let is_symlink = std::fs::symlink_metadata(&link)
-+                .map(|m| m.file_type().is_symlink())
-+                .unwrap_or(false);
-+            let looks_like_script = std::fs::read_to_string(&link)
-+                .map(|content| content.starts_with("#!"))
-+                .unwrap_or(false);
-+            if !is_symlink && !looks_like_script {
-+                log::warn!("[ccs] {} 已存在且不是脚本，跳过安装", link.display());
-+                return;
-+            }
-+            let _ = std::fs::remove_file(&link);
-+        }
-+
-+        match std::os::unix::fs::symlink(&resource, &link) {
-+            Ok(()) => {
-+                log::info!(
-+                    "[ccs] ccs 已安装: {} -> {}",
-+                    link.display(),
-+                    resource.display()
-+                );
-+                return;
-+            }
-+            Err(e) => log::warn!("[ccs] 创建软链接失败 {}: {e}", link.display()),
++    // 幂等：已安装且内容一致则跳过
++    if let Ok(existing) = std::fs::read_to_string(&link) {
++        if existing == script {
++            log::info!("[ccs] ccs 已是最新: {}", link.display());
++            return;
 +        }
 +    }
-+    log::warn!("[ccs] 没有「在 PATH 中且可写」的候选目录，请手动安装 ccs 脚本");
++    // 旧软链接/旧副本先清理
++    let _ = std::fs::remove_file(&link);
++
++    if on_readonly_volume {
++        // DMG 只读卷：拷贝完整脚本内容
++        match std::fs::write(&link, &script).and_then(|()| {
++            let mut perms = std::fs::metadata(&link)?.permissions();
++            perms.set_mode(0o755);
++            std::fs::set_permissions(&link, perms)
++        }) {
++            Ok(()) => log::info!("[ccs] 只读卷模式：完整脚本已拷贝到 {}", link.display()),
++            Err(e) => log::warn!("[ccs] 拷贝失败 {}: {e}", link.display()),
++        }
++    } else {
++        // 正常磁盘：软链接指向包内资源
++        match std::os::unix::fs::symlink(&resource, &link) {
++            Ok(()) => log::info!(
++                "[ccs] 软链接已建立: {} -> {}",
++                link.display(),
++                resource.display()
++            ),
++            Err(e) => log::warn!("[ccs] 软链接失败 {}: {e}", link.display()),
++        }
++    }
 +}
 diff --git a/src-tauri/src/lib.rs b/src-tauri/src/lib.rs
 index 36b76cb..f6113be 100644

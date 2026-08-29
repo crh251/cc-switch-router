@@ -42,7 +42,7 @@ open ~/Downloads/CC-Switch-<版本>-macos-arm64-ccs.dmg
 
 ## 终端用法（ccs 脚本）
 
-app 每次启动会自动把内置的 `ccs` 脚本软链接到 PATH 目录（优先 `/opt/homebrew/bin`）。已开着的终端跑一次 `rehash`，或新开终端即可：
+app 每次启动会自动把内置的 `ccs` 脚本安装到 `~/script/bin`（你已加入 PATH）。已开着的终端跑一次 `rehash`，或新开终端即可：
 
 ```bash
 ccs                    # 官方直连（api.anthropic.com，不经本地路由）
@@ -55,7 +55,7 @@ ccs help
 
 - 供应商名 = cc-switch 界面里的名字，**不区分大小写、支持部分匹配**（`ccs glm` 可匹配 glm-router）
 - 依赖：CC Switch Router 运行中且已开启路由接管（启动前脚本会预检 15721 端口）
-- 手动安装（可选）：`install -m 755 ccs /usr/local/bin/ccs`
+- 手动安装（可选）：`install -m 755 ccs ~/script/bin/ccs`
 
 不用 ccs 的手动方式（等价）：`claude --settings` 传入带 `ANTHROPIC_CUSTOM_HEADERS: "x-ccs-provider: <名字>"` 的 env 覆盖即可。
 
