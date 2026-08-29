@@ -41,16 +41,21 @@ if ! nc -z 127.0.0.1 15721 2>/dev/null; then
   exit 1
 fi
 
-# Provider existence check (read-only; skipped if sqlite3 is unavailable)
+# Resolve the canonical provider name from cc-switch (case-insensitive partial
+# match; exact match wins; shortest name wins on multiple hits). The patched
+# proxy matches the x-ccs-provider header by EXACT name, so the partial input
+# must be expanded to the full provider name first.
+FULL_NAME=""
 if command -v sqlite3 >/dev/null 2>&1 && [ -f "$HOME/.cc-switch/cc-switch.db" ]; then
   SAFE=${NAME//\'/}
-  HIT=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
-    "SELECT COUNT(*) FROM providers WHERE app_type='claude' AND name LIKE '%'||'$SAFE'||'%'" 2>/dev/null || echo 1)
-  if [ "${HIT:-0}" = "0" ]; then
-    echo "ccs: no Claude provider matching '${NAME}' in cc-switch (name must match the cc-switch UI)" >&2
-    exit 1
-  fi
+  SAFE=${SAFE//\"/}
+  FULL_NAME=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
+    "SELECT name FROM providers WHERE app_type='claude' AND name LIKE '%'||'$SAFE'||'%' ORDER BY (name = '$SAFE') DESC, length(name) LIMIT 1" 2>/dev/null || true)
+fi
+if [ -z "$FULL_NAME" ]; then
+  echo "ccs: no Claude provider matching '${NAME}' in cc-switch (name must match the cc-switch UI)" >&2
+  exit 1
 fi
 
-# Route through the local proxy: inject x-ccs-provider header
-exec claude --settings "{\"env\":{\"ANTHROPIC_CUSTOM_HEADERS\":\"x-ccs-provider: ${NAME}\"}}" "$@"
+# Route through the local proxy: inject x-ccs-provider header (canonical name)
+exec claude --settings "{\"env\":{\"ANTHROPIC_CUSTOM_HEADERS\":\"x-ccs-provider: ${FULL_NAME}\"}}" "$@"
