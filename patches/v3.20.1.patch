@@ -1,6 +1,6 @@
 diff --git a/src-tauri/resources/ccs b/src-tauri/resources/ccs
 new file mode 100755
-index 0000000..d3a9f39
+index 0000000..37440f8
 --- /dev/null
 +++ b/src-tauri/resources/ccs
 @@ -0,0 +1,83 @@
@@ -82,7 +82,7 @@ index 0000000..d3a9f39
 +  exit 1
 +fi
 +
-+echo "ccs: provider \"${FULL_NAME}\" -> launching claude..." >&2
++echo "ccs: provider \"${FULL_NAME}\"" >&2
 +sleep 1
 +
 +# Route through the local proxy: inject x-ccs-provider header (canonical name)

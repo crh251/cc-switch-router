@@ -76,7 +76,7 @@ if [ "$DB_CHECK_OK" = "1" ] && [ -z "$FULL_NAME" ]; then
   exit 1
 fi
 
-echo "ccs: provider \"${FULL_NAME}\" -> launching claude..." >&2
+echo "ccs: provider \"${FULL_NAME}\"" >&2
 sleep 1
 
 # Route through the local proxy: inject x-ccs-provider header (canonical name)
