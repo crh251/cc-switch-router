@@ -1,9 +1,9 @@
 diff --git a/src-tauri/resources/ccs b/src-tauri/resources/ccs
 new file mode 100755
-index 0000000..c2f8f8c
+index 0000000..4fdf34c
 --- /dev/null
 +++ b/src-tauri/resources/ccs
-@@ -0,0 +1,61 @@
+@@ -0,0 +1,64 @@
 +#!/usr/bin/env bash
 +# ccs — Claude Code per-terminal provider switching
 +# (requires the patched CC Switch Router running with routing takeover enabled)
@@ -62,6 +62,9 @@ index 0000000..c2f8f8c
 +  echo "ccs: no Claude provider matching '${NAME}' in cc-switch (name must match the cc-switch UI)" >&2
 +  exit 1
 +fi
++
++echo "ccs: provider \"${FULL_NAME}\" -> launching claude..." >&2
++sleep 1
 +
 +# Route through the local proxy: inject x-ccs-provider header (canonical name)
 +exec claude --settings "{\"env\":{\"ANTHROPIC_CUSTOM_HEADERS\":\"x-ccs-provider: ${FULL_NAME}\"}}" "$@"

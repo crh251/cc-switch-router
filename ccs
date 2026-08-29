@@ -57,5 +57,8 @@ if [ -z "$FULL_NAME" ]; then
   exit 1
 fi
 
+echo "ccs: provider \"${FULL_NAME}\" -> launching claude..." >&2
+sleep 1
+
 # Route through the local proxy: inject x-ccs-provider header (canonical name)
 exec claude --settings "{\"env\":{\"ANTHROPIC_CUSTOM_HEADERS\":\"x-ccs-provider: ${FULL_NAME}\"}}" "$@"
