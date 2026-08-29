@@ -2,16 +2,17 @@
 
 给 [farion1231/cc-switch](https://github.com/farion1231/cc-switch) 打「按终端路由」补丁，并用 GitHub Actions 自动构建 macOS（Apple Silicon）DMG。
 
-> 本仓库只包含补丁脚本与构建流水线，不含 cc-switch 源码；构建时按所选版本自动拉取上游源码。
+> 本仓库只包含**按版本划分的补丁文件**与构建流水线，不含 cc-switch 源码；构建时按所选版本自动拉取上游源码并套用对应补丁。
 
 ## 仓库结构与原理
 
 ```
-├── patch_ccs.py                    # 补丁脚本：对上游源码做精确文本替换（不匹配即报错退出）
+├── patches/
+│   └── v3.20.1.patch               # 针对上游 v3.20.1 tag 的标准 diff（git apply 可干净套用）
 └── .github/workflows/build-macos.yml
 ```
 
-workflow 流程：下载所选版本的上游源码 tarball → `python3 patch_ccs.py src` 应用修改 → `pnpm tauri build --target aarch64-apple-darwin` → `hdiutil` 打包 DMG → 发布到本仓库 Release。
+workflow 流程：下载所选版本的上游源码 tarball → `git apply patches/<所选版本>.patch` → `pnpm tauri build --target aarch64-apple-darwin` → `hdiutil` 打包 DMG → 发布到本仓库 Release。
 
 补丁的三处修改：
 
@@ -19,11 +20,11 @@ workflow 流程：下载所选版本的上游源码 tarball → `python3 patch_c
 2. `handler_context.rs`：读 `x-ccs-provider` 请求头，命中则该请求固定路由到指定供应商（跳过全局"当前供应商"与故障转移），未命中回退
 3. `tauri.conf.json`：`createUpdaterArtifacts: false` + 删除 `plugins.updater`（自编译无需签名 key；防止官方更新覆盖补丁版）
 
+每个版本的补丁都是对**该版本源码**生成的标准 diff，因此旧版本随时可以重新构建，永远能干净套用。
+
 ## 构建
 
-GitHub → **Actions** → **Build macOS arm64 (patched cc-switch)** → **Run workflow** → 选择 cc-switch 版本 → Run
-
-> 仅支持 options 列表中已适配补丁的版本。
+GitHub → **Actions** → **Build macOS arm64 (patched cc-switch)** → **Run workflow** → 下拉选择 cc-switch 版本 → Run
 
 构建完成后在本仓库 **Releases** 下载 `CC-Switch-<版本>-macos-arm64-ccs.dmg`。
 
@@ -66,6 +67,6 @@ claude --settings ~/.claude/profiles/kimi.json        # 该终端永远走 Kimi
 
 ## 新增支持的版本
 
-1. 获取对应版本的源码，基于它重新生成 `patch_ccs.py` 中的精确匹配片段（改动点不变：按头路由 + 禁用更新器）
+1. 下载新版本源码，重新应用同样的三处修改，导出 `patches/<新版本>.patch`（若上游这两处代码没变，直接复用旧补丁内容改个名也可以）
 2. `.github/workflows/build-macos.yml` 的 `options:` 列表加一行
 3. 提交推送后，Actions 里即可选到新版本

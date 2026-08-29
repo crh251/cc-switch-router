@@ -29,8 +29,9 @@ jobs:
           mkdir src
           tar -xzf /tmp/src.tar.gz -C src --strip-components=1
 
-      - name: Apply x-ccs-provider patch
-        run: python3 patch_ccs.py src
+      - name: Apply patch (patches/${{ inputs.version }}.patch)
+        working-directory: src
+        run: git apply --whitespace=nowarn "../patches/${{ inputs.version }}.patch"
 
       - uses: actions/setup-node@v6
         with:

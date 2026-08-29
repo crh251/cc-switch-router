@@ -1,0 +1,183 @@
+diff --git a/src-tauri/src/proxy/handler_context.rs b/src-tauri/src/proxy/handler_context.rs
+index 29be37d..3f796b1 100644
+--- a/src-tauri/src/proxy/handler_context.rs
++++ b/src-tauri/src/proxy/handler_context.rs
+@@ -131,17 +131,53 @@ impl RequestContext {
+ 
+         // 使用共享的 ProviderRouter 选择 Provider（熔断器状态跨请求保持）
+         // 注意：只在这里调用一次，结果传递给 forwarder，避免重复消耗 HalfOpen 名额
+-        let providers = state
+-            .provider_router
+-            .select_providers(app_type_str)
+-            .await
+-            .map_err(|e| match e {
+-                crate::error::AppError::AllProvidersCircuitOpen => {
+-                    ProxyError::AllProvidersCircuitOpen
++        //
++        // ccs 扩展：请求头 `x-ccs-provider: <供应商名|id>` 显式指定供应商（终端级隔离），
++        // 命中时跳过当前供应商与故障转移；未命中或不带头时走默认选择逻辑。
++        let ccs_provider_override = headers
++            .get("x-ccs-provider")
++            .and_then(|value| value.to_str().ok())
++            .map(str::trim)
++            .filter(|value| !value.is_empty())
++            .map(str::to_string);
++
++        let providers_result = if let Some(override_ref) = ccs_provider_override.as_deref() {
++            match state
++                .provider_router
++                .select_provider_by_override(app_type_str, override_ref)
++                .await
++            {
++                Ok(Some(provider)) => {
++                    log::info!(
++                        "[{}] [ccs] x-ccs-provider 命中: {} ({}), model: {}",
++                        tag,
++                        provider.name,
++                        provider.id,
++                        request_model
++                    );
++                    Ok(vec![provider])
++                }
++                Ok(None) => {
++                    log::warn!(
++                        "[{}] [ccs] x-ccs-provider '{override_ref}' 未匹配任何供应商，回退默认选择",
++                        tag
++                    );
++                    state.provider_router.select_providers(app_type_str).await
+                 }
+-                crate::error::AppError::NoProvidersConfigured => ProxyError::NoProvidersConfigured,
+-                _ => ProxyError::DatabaseError(e.to_string()),
+-            })?;
++                Err(e) => Err(e),
++            }
++        } else {
++            state
++                .provider_router
++                .select_providers(app_type_str)
++                .await
++        };
++
++        let providers = providers_result.map_err(|e| match e {
++            crate::error::AppError::AllProvidersCircuitOpen => ProxyError::AllProvidersCircuitOpen,
++            crate::error::AppError::NoProvidersConfigured => ProxyError::NoProvidersConfigured,
++            _ => ProxyError::DatabaseError(e.to_string()),
++        })?;
+ 
+         let provider = providers
+             .first()
+diff --git a/src-tauri/src/proxy/provider_router.rs b/src-tauri/src/proxy/provider_router.rs
+index 70b35a7..8851b36 100644
+--- a/src-tauri/src/proxy/provider_router.rs
++++ b/src-tauri/src/proxy/provider_router.rs
+@@ -130,6 +130,22 @@ impl ProviderRouter {
+         Ok(result)
+     }
+ 
++    /// 按显式覆盖（`x-ccs-provider` 请求头）选择供应商
++    ///
++    /// 在该应用的全部供应商中按名字（忽略大小写）或 id 匹配；命中返回单个供应商
++    /// （显式指定不参与故障转移与熔断检查），未命中返回 `None`，由调用方回退默认逻辑。
++    pub async fn select_provider_by_override(
++        &self,
++        app_type: &str,
++        override_ref: &str,
++    ) -> Result<Option<Provider>, AppError> {
++        let all_providers = self.db.get_all_providers(app_type)?;
++        let hit = all_providers.values().find(|provider| {
++            provider.name.eq_ignore_ascii_case(override_ref) || provider.id == override_ref
++        });
++        Ok(hit.cloned())
++    }
++
+     /// 请求执行前获取熔断器“放行许可”
+     ///
+     /// - Closed：直接放行
+@@ -403,6 +419,60 @@ mod tests {
+         assert_eq!(providers[0].id, "a");
+     }
+ 
++    #[tokio::test]
++    #[serial]
++    async fn test_select_provider_by_override() {
++        let _home = TempHome::new();
++        let db = Arc::new(Database::memory().unwrap());
++
++        let provider_a = Provider::with_id("a".to_string(), "Kimi".to_string(), json!({}), None);
++        let provider_b = Provider::with_id(
++            "b".to_string(),
++            "Zhipu GLM - router".to_string(),
++            json!({}),
++            None,
++        );
++
++        db.save_provider("claude", &provider_a).unwrap();
++        db.save_provider("claude", &provider_b).unwrap();
++        db.set_current_provider("claude", "a").unwrap();
++
++        let router = ProviderRouter::new(db);
++
++        // 名字精确命中
++        let hit = router
++            .select_provider_by_override("claude", "Kimi")
++            .await
++            .unwrap()
++            .expect("应命中 Kimi");
++        assert_eq!(hit.id, "a");
++
++        // 名字忽略大小写 + 含空格
++        let hit = router
++            .select_provider_by_override("claude", "zhipu glm - ROUTER")
++            .await
++            .unwrap()
++            .expect("应命中 GLM");
++        assert_eq!(hit.id, "b");
++
++        // 按 id 命中
++        let hit = router
++            .select_provider_by_override("claude", "b")
++            .await
++            .unwrap()
++            .expect("应按 id 命中");
++        assert_eq!(hit.name, "Zhipu GLM - router");
++
++        // 未命中 → None
++        assert!(
++            router
++                .select_provider_by_override("claude", "no-such-provider")
++                .await
++                .unwrap()
++                .is_none()
++        );
++    }
++
+     #[tokio::test]
+     #[serial]
+     async fn test_failover_enabled_uses_queue_order_ignoring_current() {
+diff --git a/src-tauri/tauri.conf.json b/src-tauri/tauri.conf.json
+index 50aa7a7..865dde5 100644
+--- a/src-tauri/tauri.conf.json
++++ b/src-tauri/tauri.conf.json
+@@ -36,7 +36,7 @@
+   "bundle": {
+     "active": true,
+     "targets": "all",
+-    "createUpdaterArtifacts": true,
++    "createUpdaterArtifacts": false,
+     "icon": [
+       "icons/32x32.png",
+       "icons/128x128.png",
+@@ -58,13 +58,6 @@
+       "desktop": {
+         "schemes": ["ccswitch"]
+       }
+-    },
+-    "updater": {
+-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEM4MDI4QzlBNTczOTI4RTMKUldUaktEbFhtb3dDeUM5US9kT0FmdGR5Ti9vQzcwa2dTMlpibDVDUmQ2M0VGTzVOWnd0SGpFVlEK",
+-      "endpoints": [
+-        "https://dl.ccswitch.io/latest.json",
+-        "https://github.com/farion1231/cc-switch/releases/latest/download/latest.json"
+-      ]
+     }
+   }
+ }
