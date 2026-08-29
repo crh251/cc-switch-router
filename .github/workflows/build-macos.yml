@@ -76,7 +76,8 @@ jobs:
           DMG_NAME="CC-Switch-${{ inputs.version }}-macos-arm64-ccs.dmg"
           STAGE="$RUNNER_TEMP/dmg-stage"
           rm -rf "$STAGE" && mkdir -p "$STAGE"
-          ditto "$APP_DIR" "$STAGE/$APP_NAME"
+          # 注意：只拷贝 .app 本体；若 ditto 整个 bundle/macos 目录会把真 app 套娃进假壳里
+          ditto "$APP_DIR/$APP_NAME" "$STAGE/$APP_NAME"
           create-dmg \
             --volname "CC Switch Router" \
             --background "src/src-tauri/icons/dmg-background.png" \
