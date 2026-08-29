@@ -1,9 +1,9 @@
 diff --git a/src-tauri/resources/ccs b/src-tauri/resources/ccs
 new file mode 100755
-index 0000000..4fdf34c
+index 0000000..d3a9f39
 --- /dev/null
 +++ b/src-tauri/resources/ccs
-@@ -0,0 +1,64 @@
+@@ -0,0 +1,83 @@
 +#!/usr/bin/env bash
 +# ccs — Claude Code per-terminal provider switching
 +# (requires the patched CC Switch Router running with routing takeover enabled)
@@ -25,7 +25,7 @@ index 0000000..4fdf34c
 +export LC_ALL=en_US.UTF-8
 +
 +case "${1:-}" in
-+  "")
++  ""|official|anthropic)
 +    # Official API direct: override base URL and clear token (claude.ai login)
 +    exec claude --settings '{"env":{"ANTHROPIC_BASE_URL":"https://api.anthropic.com","ANTHROPIC_AUTH_TOKEN":""}}'
 +    ;;
@@ -47,19 +47,38 @@ index 0000000..4fdf34c
 +  exit 1
 +fi
 +
-+# Resolve the canonical provider name from cc-switch (case-insensitive partial
-+# match; exact match wins; shortest name wins on multiple hits). The patched
-+# proxy matches the x-ccs-provider header by EXACT name, so the partial input
-+# must be expanded to the full provider name first.
-+FULL_NAME=""
++# Resolve the canonical provider name from cc-switch.
++# Matching rules: exact (case-insensitive) wins; otherwise the input must match
++# EXACTLY ONE provider by substring -- multiple hits are an error, since we
++# cannot know which one the user meant. The patched proxy matches the
++# x-ccs-provider header by EXACT name, so the full name is required.
++# 'Claude Official' is excluded: it does not support routing (use bare `ccs`).
++DB_CHECK_OK=0
 +if command -v sqlite3 >/dev/null 2>&1 && [ -f "$HOME/.cc-switch/cc-switch.db" ]; then
++  DB_CHECK_OK=1
 +  SAFE=${NAME//\'/}
 +  SAFE=${SAFE//\"/}
 +  FULL_NAME=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
-+    "SELECT name FROM providers WHERE app_type='claude' AND name LIKE '%'||'$SAFE'||'%' ORDER BY (name = '$SAFE') DESC, (name LIKE '$SAFE'||'%') DESC, length(name) ASC LIMIT 1" 2>/dev/null || true)
++    "SELECT name FROM providers WHERE app_type='claude' AND name = '$SAFE' COLLATE NOCASE AND name <> 'Claude Official' LIMIT 1" 2>/dev/null || true)
++  if [ -z "$FULL_NAME" ]; then
++    CAND_COUNT=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
++      "SELECT COUNT(*) FROM providers WHERE app_type='claude' AND name LIKE '%'||'$SAFE'||'%' AND name <> 'Claude Official'" 2>/dev/null || echo 0)
++    if [ "${CAND_COUNT:-0}" = "0" ]; then
++      echo "ccs: no Claude provider matching '${NAME}' in cc-switch (name must match the cc-switch UI)" >&2
++      exit 1
++    fi
++    if [ "${CAND_COUNT:-0}" -gt 1 ]; then
++      echo "ccs: '${NAME}' matches multiple providers -- be specific:" >&2
++      sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
++        "SELECT '  - '||name FROM providers WHERE app_type='claude' AND name LIKE '%'||'$SAFE'||'%' AND name <> 'Claude Official'" >&2 2>/dev/null
++      exit 1
++    fi
++    FULL_NAME=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
++      "SELECT name FROM providers WHERE app_type='claude' AND name LIKE '%'||'$SAFE'||'%' AND name <> 'Claude Official' LIMIT 1" 2>/dev/null || true)
++  fi
 +fi
-+if [ -z "$FULL_NAME" ]; then
-+  echo "ccs: no Claude provider matching '${NAME}' in cc-switch (name must match the cc-switch UI)" >&2
++if [ "$DB_CHECK_OK" = "1" ] && [ -z "$FULL_NAME" ]; then
++  echo "ccs: provider '${NAME}' resolved to nothing" >&2
 +  exit 1
 +fi
 +
