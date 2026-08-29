@@ -50,7 +50,7 @@ if command -v sqlite3 >/dev/null 2>&1 && [ -f "$HOME/.cc-switch/cc-switch.db" ];
   SAFE=${NAME//\'/}
   SAFE=${SAFE//\"/}
   FULL_NAME=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
-    "SELECT name FROM providers WHERE app_type='claude' AND name LIKE '%'||'$SAFE'||'%' ORDER BY (name = '$SAFE') DESC, length(name) LIMIT 1" 2>/dev/null || true)
+    "SELECT name FROM providers WHERE app_type='claude' AND name LIKE '%'||'$SAFE'||'%' ORDER BY (name = '$SAFE') DESC, (name LIKE '$SAFE'||'%') DESC, length(name) ASC LIMIT 1" 2>/dev/null || true)
 fi
 if [ -z "$FULL_NAME" ]; then
   echo "ccs: no Claude provider matching '${NAME}' in cc-switch (name must match the cc-switch UI)" >&2

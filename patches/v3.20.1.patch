@@ -1,6 +1,6 @@
 diff --git a/src-tauri/resources/ccs b/src-tauri/resources/ccs
 new file mode 100755
-index 0000000..10edcf7
+index 0000000..c2f8f8c
 --- /dev/null
 +++ b/src-tauri/resources/ccs
 @@ -0,0 +1,61 @@
@@ -56,7 +56,7 @@ index 0000000..10edcf7
 +  SAFE=${NAME//\'/}
 +  SAFE=${SAFE//\"/}
 +  FULL_NAME=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
-+    "SELECT name FROM providers WHERE app_type='claude' AND name LIKE '%'||'$SAFE'||'%' ORDER BY (name = '$SAFE') DESC, length(name) LIMIT 1" 2>/dev/null || true)
++    "SELECT name FROM providers WHERE app_type='claude' AND name LIKE '%'||'$SAFE'||'%' ORDER BY (name = '$SAFE') DESC, (name LIKE '$SAFE'||'%') DESC, length(name) ASC LIMIT 1" 2>/dev/null || true)
 +fi
 +if [ -z "$FULL_NAME" ]; then
 +  echo "ccs: no Claude provider matching '${NAME}' in cc-switch (name must match the cc-switch UI)" >&2
