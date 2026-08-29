@@ -59,16 +59,17 @@ index 0000000..6c45e1e
 +exec claude --settings "{\"env\":{\"ANTHROPIC_CUSTOM_HEADERS\":\"x-ccs-provider: ${NAME}\"}}" "$@"
 diff --git a/src-tauri/src/ccs_router.rs b/src-tauri/src/ccs_router.rs
 new file mode 100644
-index 0000000..03439aa
+index 0000000..370671c
 --- /dev/null
 +++ b/src-tauri/src/ccs_router.rs
-@@ -0,0 +1,97 @@
+@@ -0,0 +1,98 @@
 +//! 把打包资源中的 ccs 脚本以软链接方式安装到 PATH 目录
 +//!
 +//! 每次 app 启动执行：确保资源文件可执行，并在第一个「存在于 PATH 且可写」的
 +//! 候选目录里建立指向它的软链接。链接指向 app 内资源，app 升级后自动跟随；
 +//! app 被移动后链接会失效，但下次启动会自动重建。所有失败只记日志，不阻断启动。
 +
++use std::os::unix::fs::PermissionsExt;
 +use std::path::{Path, PathBuf};
 +use tauri::Manager;
 +
