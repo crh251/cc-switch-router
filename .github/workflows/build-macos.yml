@@ -66,11 +66,25 @@ jobs:
         working-directory: src
         run: pnpm tauri build --target aarch64-apple-darwin --bundles app
 
-      - name: Pack DMG
+      - name: Pack DMG (create-dmg, official style)
         run: |
+          HOMEBREW_NO_AUTO_UPDATE=1 brew install create-dmg
           APP_DIR="src/src-tauri/target/aarch64-apple-darwin/release/bundle/macos"
           DMG_NAME="CC-Switch-${{ inputs.version }}-macos-arm64-ccs.dmg"
-          hdiutil create -volname "CC Switch" -srcfolder "$APP_DIR" -ov -format UDZO "$DMG_NAME"
+          STAGE="$RUNNER_TEMP/dmg-stage"
+          rm -rf "$STAGE" && mkdir -p "$STAGE"
+          ditto "$APP_DIR" "$STAGE/CC Switch.app"
+          create-dmg \
+            --volname "CC Switch" \
+            --background "src/src-tauri/icons/dmg-background.png" \
+            --window-size 660 400 \
+            --window-pos 200 120 \
+            --icon-size 80 \
+            --icon "CC Switch.app" 180 220 \
+            --hide-extension "CC Switch.app" \
+            --app-drop-link 480 220 \
+            "$DMG_NAME" \
+            "$STAGE"
           echo "DMG_NAME=$DMG_NAME" >> "$GITHUB_ENV"
 
       - name: Publish to Release
