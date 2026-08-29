@@ -1,0 +1,83 @@
+name: Build macOS arm64 (patched cc-switch)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "cc-switch 版本（仅支持已适配补丁的版本）"
+        type: choice
+        required: true
+        default: v3.20.1
+        options:
+          - v3.20.1
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos-arm64:
+    runs-on: macos-14
+    steps:
+      - name: Checkout (patch script & workflow)
+        uses: actions/checkout@v6
+
+      - name: Download cc-switch source
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          curl -fsSL "https://github.com/farion1231/cc-switch/archive/refs/tags/${VERSION}.tar.gz" -o /tmp/src.tar.gz
+          mkdir src
+          tar -xzf /tmp/src.tar.gz -C src --strip-components=1
+
+      - name: Apply x-ccs-provider patch
+        run: python3 patch_ccs.py src
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Install pnpm
+        working-directory: src
+        run: |
+          corepack enable
+          corepack install
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ~/.pnpm-store
+          key: pnpm-${{ hashFiles('src/pnpm-lock.yaml') }}
+          restore-keys: pnpm-
+
+      - name: Install frontend deps
+        working-directory: src
+        run: pnpm install --frozen-lockfile
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src/src-tauri
+
+      - name: Build .app (aarch64)
+        working-directory: src
+        run: pnpm tauri build --target aarch64-apple-darwin --bundles app
+
+      - name: Pack DMG
+        run: |
+          APP_DIR="src/src-tauri/target/aarch64-apple-darwin/release/bundle/macos"
+          DMG_NAME="CC-Switch-${{ inputs.version }}-macos-arm64-ccs.dmg"
+          hdiutil create -volname "CC Switch" -srcfolder "$APP_DIR" -ov -format UDZO "$DMG_NAME"
+          echo "DMG_NAME=$DMG_NAME" >> "$GITHUB_ENV"
+
+      - name: Publish to Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          gh release create "$VERSION" "$DMG_NAME" \
+            --title "CC Switch $VERSION (x-ccs-provider patched, macOS arm64)" \
+            --notes "补丁版：支持 x-ccs-provider 请求头按终端路由供应商。未签名，首次打开执行 xattr -cr 去隔离。" \
+            --latest || gh release upload "$VERSION" "$DMG_NAME" --clobber
