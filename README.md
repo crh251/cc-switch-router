@@ -35,8 +35,10 @@ DMG 未签名。浏览器下载时会给 DMG 打隔离标记，**先清除再挂
 ```bash
 xattr -d com.apple.quarantine ~/Downloads/CC-Switch-<版本>-macos-arm64-ccs.dmg
 open ~/Downloads/CC-Switch-<版本>-macos-arm64-ccs.dmg
-# 打开窗口里把 CC Switch.app 拖到 Applications 快捷方式（或手动拷贝替换）
+# 打开窗口里把 CC Switch Router.app 拖到 Applications 快捷方式（或手动拷贝替换）
 ```
+
+> 应用名为 **CC Switch Router**，可与官方 CC Switch 共存区分；但两者共用 `~/.cc-switch` 数据且同一时间只能运行一个（同一应用锁）。
 
 ## 终端用法
 

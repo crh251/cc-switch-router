@@ -70,18 +70,19 @@ jobs:
         run: |
           HOMEBREW_NO_AUTO_UPDATE=1 brew install create-dmg
           APP_DIR="src/src-tauri/target/aarch64-apple-darwin/release/bundle/macos"
+          APP_NAME="CC Switch Router.app"
           DMG_NAME="CC-Switch-${{ inputs.version }}-macos-arm64-ccs.dmg"
           STAGE="$RUNNER_TEMP/dmg-stage"
           rm -rf "$STAGE" && mkdir -p "$STAGE"
-          ditto "$APP_DIR" "$STAGE/CC Switch.app"
+          ditto "$APP_DIR" "$STAGE/$APP_NAME"
           create-dmg \
-            --volname "CC Switch" \
+            --volname "CC Switch Router" \
             --background "src/src-tauri/icons/dmg-background.png" \
             --window-size 660 400 \
             --window-pos 200 120 \
             --icon-size 80 \
-            --icon "CC Switch.app" 180 220 \
-            --hide-extension "CC Switch.app" \
+            --icon "$APP_NAME" 180 220 \
+            --hide-extension "$APP_NAME" \
             --app-drop-link 480 220 \
             "$DMG_NAME" \
             "$STAGE"
