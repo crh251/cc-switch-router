@@ -1,3 +1,187 @@
+diff --git a/src-tauri/resources/ccs b/src-tauri/resources/ccs
+new file mode 100755
+index 0000000..6c45e1e
+--- /dev/null
++++ b/src-tauri/resources/ccs
+@@ -0,0 +1,53 @@
++#!/usr/bin/env bash
++# ccs — Claude Code 终端级供应商切换
++# （依赖补丁版 CC Switch Router 运行中，且已开启路由接管）
++#
++#   ccs                    官方直连（api.anthropic.com，不经本地路由）
++#   ccs <供应商名> [args…]  经本地路由（x-ccs-provider 请求头）固定到该供应商，
++#                          args 原样透传给 claude
++#
++# 示例:
++#   ccs                    # 官方
++#   ccs kimi               # 走本地路由 → Kimi
++#   ccs glm-router         # 走本地路由 → GLM 标准端点（自动协议转换）
++#   ccs kimi -c            # 走 Kimi 并继续上次会话
++#
++# 供应商名 = cc-switch 界面里的名字，不区分大小写、支持部分匹配。
++set -euo pipefail
++
++case "${1:-}" in
++  "")
++    # 官方直连：覆盖 base、清空 token（claude.ai 登录生效）
++    exec claude --settings '{"env":{"ANTHROPIC_BASE_URL":"https://api.anthropic.com","ANTHROPIC_AUTH_TOKEN":""}}'
++    ;;
++  -h|--help|help)
++    grep '^# ' "$0" | sed 's/^# \{0,1\}//'
++    exit 0 ;;
++esac
++
++NAME="$1"; shift
++case "$NAME" in
++  *'"'|*'\'*)
++    echo "ccs: 供应商名含非法字符（引号/反斜杠）" >&2
++    exit 1 ;;
++esac
++
++# 预检本地路由端口
++if ! nc -z 127.0.0.1 15721 2>/dev/null; then
++  echo "⚠️ cc-switch 本地路由（127.0.0.1:15721）未运行——请启动 CC Switch Router 并开启路由接管" >&2
++  exit 1
++fi
++
++# 供应商存在性校验（只读查询；sqlite3 缺失则跳过校验）
++if command -v sqlite3 >/dev/null 2>&1 && [ -f "$HOME/.cc-switch/cc-switch.db" ]; then
++  SAFE=${NAME//\'/}
++  HIT=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
++    "SELECT COUNT(*) FROM providers WHERE app_type='claude' AND name LIKE '%'||'$SAFE'||'%'" 2>/dev/null || echo 1)
++  if [ "${HIT:-0}" = "0" ]; then
++    echo "ccs: cc-switch 里没有匹配「$NAME」的 Claude 供应商（名字需与 cc-switch 中一致）" >&2
++    exit 1
++  fi
++fi
++
++# 经本地路由：注入 x-ccs-provider 请求头（其余配置沿用全局接管）
++exec claude --settings "{\"env\":{\"ANTHROPIC_CUSTOM_HEADERS\":\"x-ccs-provider: ${NAME}\"}}" "$@"
+diff --git a/src-tauri/src/ccs_router.rs b/src-tauri/src/ccs_router.rs
+new file mode 100644
+index 0000000..03439aa
+--- /dev/null
++++ b/src-tauri/src/ccs_router.rs
+@@ -0,0 +1,97 @@
++//! 把打包资源中的 ccs 脚本以软链接方式安装到 PATH 目录
++//!
++//! 每次 app 启动执行：确保资源文件可执行，并在第一个「存在于 PATH 且可写」的
++//! 候选目录里建立指向它的软链接。链接指向 app 内资源，app 升级后自动跟随；
++//! app 被移动后链接会失效，但下次启动会自动重建。所有失败只记日志，不阻断启动。
++
++use std::path::{Path, PathBuf};
++use tauri::Manager;
++
++/// 候选安装目录（按优先级）；以 . 开头的相对路径基于用户 HOME
++const CANDIDATE_DIRS: [&str; 3] = ["/opt/homebrew/bin", "/usr/local/bin", ".local/bin"];
++
++pub fn install_on_startup(app: &tauri::AppHandle) {
++    if !cfg!(unix) {
++        log::warn!("[ccs] 非 unix 平台，跳过 ccs 安装");
++        return;
++    }
++    let Ok(resource) = app
++        .path()
++        .resolve("resources/ccs", tauri::path::BaseDirectory::Resource)
++    else {
++        log::warn!("[ccs] 无法解析打包资源 resources/ccs");
++        return;
++    };
++
++    // 打包过程可能重置权限，确保脚本可执行
++    if let Ok(meta) = std::fs::metadata(&resource) {
++        let mut perms = meta.permissions();
++        if perms.mode() & 0o111 != 0o111 {
++            perms.set_mode(0o755);
++            if let Err(e) = std::fs::set_permissions(&resource, perms) {
++                log::warn!("[ccs] 无法为资源文件添加执行权限: {e}");
++                return;
++            }
++        }
++    }
++    let script = match std::fs::read_to_string(&resource) {
++        Ok(s) if s.starts_with("#!") => s,
++        _ => {
++            log::warn!("[ccs] 打包的 ccs 脚本内容异常，跳过安装");
++            return;
++        }
++    };
++
++    let path_env = std::env::var("PATH").unwrap_or_default();
++    for dir in CANDIDATE_DIRS {
++        let dir: PathBuf = if let Some(stripped) = dir.strip_prefix('.') {
++            let home = std::env::var("HOME").unwrap_or_default();
++            if home.is_empty() {
++                continue;
++            }
++            Path::new(&home).join(stripped)
++        } else {
++            PathBuf::from(dir)
++        };
++
++        // 只安装到「存在 && 已在 PATH」的目录，避免装到用户找不到的地方
++        if !dir.is_dir() || !path_env.split(':').any(|p| Path::new(p) == dir) {
++            continue;
++        }
++
++        let link = dir.join("ccs");
++        if let Ok(current) = std::fs::read_link(&link) {
++            if current == resource {
++                log::info!("[ccs] 软链接已是最新: {}", link.display());
++                return;
++            }
++        }
++        // 已存在同名文件：仅当它是软链接、或内容是脚本文本时才覆盖，避免误伤无关文件
++        if link.exists() {
++            let is_symlink = std::fs::symlink_metadata(&link)
++                .map(|m| m.file_type().is_symlink())
++                .unwrap_or(false);
++            let looks_like_script = std::fs::read_to_string(&link)
++                .map(|content| content.starts_with("#!"))
++                .unwrap_or(false);
++            if !is_symlink && !looks_like_script {
++                log::warn!("[ccs] {} 已存在且不是脚本，跳过安装", link.display());
++                return;
++            }
++            let _ = std::fs::remove_file(&link);
++        }
++
++        match std::os::unix::fs::symlink(&resource, &link) {
++            Ok(()) => {
++                log::info!(
++                    "[ccs] ccs 已安装: {} -> {}",
++                    link.display(),
++                    resource.display()
++                );
++                return;
++            }
++            Err(e) => log::warn!("[ccs] 创建软链接失败 {}: {e}", link.display()),
++        }
++    }
++    log::warn!("[ccs] 没有「在 PATH 中且可写」的候选目录，请手动安装 ccs 脚本");
++}
+diff --git a/src-tauri/src/lib.rs b/src-tauri/src/lib.rs
+index 36b76cb..f6113be 100644
+--- a/src-tauri/src/lib.rs
++++ b/src-tauri/src/lib.rs
+@@ -7,6 +7,7 @@ mod claude_plugin;
+ mod codex_config;
+ mod codex_history_migration;
+ mod codex_state_db;
++mod ccs_router;
+ mod commands;
+ mod config;
+ mod database;
+@@ -499,6 +500,9 @@ pub fn run() {
+             // 让 Store 损坏或路径无效等启动警告能够真正落盘。
+             let _ = app_store::refresh_app_config_dir_override(app.handle());
+ 
++            // ccs：把随包的 ccs 脚本软链接到 PATH 目录（幂等，失败仅告警不阻断启动）
++            ccs_router::install_on_startup(app.handle());
++
+             #[cfg(target_os = "windows")]
+             set_windows_app_user_model_id(app.handle());
+ 
 diff --git a/src-tauri/src/proxy/handler_context.rs b/src-tauri/src/proxy/handler_context.rs
 index 29be37d..3f796b1 100644
 --- a/src-tauri/src/proxy/handler_context.rs
@@ -155,7 +339,7 @@ index 70b35a7..8851b36 100644
      #[serial]
      async fn test_failover_enabled_uses_queue_order_ignoring_current() {
 diff --git a/src-tauri/tauri.conf.json b/src-tauri/tauri.conf.json
-index 50aa7a7..a58d74c 100644
+index 50aa7a7..df1cf1f 100644
 --- a/src-tauri/tauri.conf.json
 +++ b/src-tauri/tauri.conf.json
 @@ -1,6 +1,6 @@
@@ -166,16 +350,17 @@ index 50aa7a7..a58d74c 100644
    "version": "3.20.1",
    "identifier": "com.ccswitch.desktop",
    "build": {
-@@ -36,7 +36,7 @@
+@@ -36,7 +36,8 @@
    "bundle": {
      "active": true,
      "targets": "all",
 -    "createUpdaterArtifacts": true,
++    "resources": ["resources/ccs"],
 +    "createUpdaterArtifacts": false,
      "icon": [
        "icons/32x32.png",
        "icons/128x128.png",
-@@ -58,13 +58,6 @@
+@@ -58,13 +59,6 @@
        "desktop": {
          "schemes": ["ccswitch"]
        }

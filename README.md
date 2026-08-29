@@ -40,32 +40,24 @@ open ~/Downloads/CC-Switch-<版本>-macos-arm64-ccs.dmg
 
 > 应用名为 **CC Switch Router**，可与官方 CC Switch 共存区分；但两者共用 `~/.cc-switch` 数据且同一时间只能运行一个（同一应用锁）。
 
-## 终端用法
+## 终端用法（ccs 脚本）
 
-每供应商一个 profile（如 `~/.claude/profiles/kimi.json`），启动时 `--settings` 指定：
-
-```json
-{
-  "env": {
-    "ANTHROPIC_BASE_URL": "http://127.0.0.1:15721",
-    "ANTHROPIC_AUTH_TOKEN": "PROXY_MANAGED",
-    "ANTHROPIC_CUSTOM_HEADERS": "x-ccs-provider: kimi",
-    "ANTHROPIC_MODEL": "kimi-k2.7-code",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "kimi-k2.7-code",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "kimi-k2.7-code",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL": "kimi-k2.7-code",
-    "CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT": "1"
-  }
-}
-```
+app 每次启动会自动把内置的 `ccs` 脚本软链接到 PATH 目录（优先 `/opt/homebrew/bin`）。已开着的终端跑一次 `rehash`，或新开终端即可：
 
 ```bash
-claude --settings ~/.claude/profiles/kimi.json        # 该终端永远走 Kimi
+ccs                    # 官方直连（api.anthropic.com，不经本地路由）
+ccs kimi               # 走本地路由 → Kimi（该终端固定）
+ccs openrouter         # 走本地路由 → OpenRouter
+ccs glm-router         # 走本地路由 → GLM 标准端点（协议转换自动完成）
+ccs kimi -c            # 供应商名后面的参数原样透传给 claude
+ccs help
 ```
 
-- 不同终端用不同 profile → 各走各的供应商，并行互不影响
-- 不带 `--settings` 的终端 → 走 cc-switch 全局当前供应商
-- `x-ccs-provider` 的值 = cc-switch 里的供应商名字（忽略大小写）或 id
+- 供应商名 = cc-switch 界面里的名字，**不区分大小写、支持部分匹配**（`ccs glm` 可匹配 glm-router）
+- 依赖：CC Switch Router 运行中且已开启路由接管（启动前脚本会预检 15721 端口）
+- 手动安装（可选）：`install -m 755 ccs /usr/local/bin/ccs`
+
+不用 ccs 的手动方式（等价）：`claude --settings` 传入带 `ANTHROPIC_CUSTOM_HEADERS: "x-ccs-provider: <名字>"` 的 env 覆盖即可。
 
 ## 新增支持的版本
 
