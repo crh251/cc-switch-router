@@ -31,7 +31,9 @@ jobs:
 
       - name: Apply patch (patches/${{ inputs.version }}.patch)
         working-directory: src
-        run: git apply --whitespace=nowarn "../patches/${{ inputs.version }}.patch"
+        # 注意：必须用 patch（按 CWD 解析路径）。git apply 在仓库子目录里会按
+        # 仓库根解析路径，导致补丁静默落空。
+        run: patch -p1 --batch -i "../patches/${{ inputs.version }}.patch"
 
       - uses: actions/setup-node@v6
         with:
