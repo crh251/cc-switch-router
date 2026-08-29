@@ -30,12 +30,12 @@ GitHub → **Actions** → **Build macOS arm64 (patched cc-switch)** → **Run w
 
 ## 安装
 
-DMG 未签名，首次打开前去掉隔离属性：
+DMG 未签名。浏览器下载时会给 DMG 打隔离标记，**先清除再挂载**，否则 app 会报「已损坏」：
 
 ```bash
-hdiutil attach CC-Switch-<版本>-macos-arm64-ccs.dmg
-xattr -cr "/Volumes/CC Switch/CC Switch.app"
-# 拷贝到目标位置替换旧版（供应商数据在 ~/.cc-switch，不受影响）
+xattr -d com.apple.quarantine ~/Downloads/CC-Switch-<版本>-macos-arm64-ccs.dmg
+open ~/Downloads/CC-Switch-<版本>-macos-arm64-ccs.dmg
+# 打开窗口里把 CC Switch.app 拖到 Applications 快捷方式（或手动拷贝替换）
 ```
 
 ## 终端用法
