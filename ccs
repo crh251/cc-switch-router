@@ -1,25 +1,26 @@
 #!/usr/bin/env bash
-# ccs — Claude Code 终端级供应商切换
-# （依赖补丁版 CC Switch Router 运行中，且已开启路由接管）
+# ccs — Claude Code per-terminal provider switching
+# (requires the patched CC Switch Router running with routing takeover enabled)
 #
-#   ccs                    官方直连（api.anthropic.com，不经本地路由）
-#   ccs <供应商名> [args…]  经本地路由（x-ccs-provider 请求头）固定到该供应商，
-#                          args 原样透传给 claude
+#   ccs                    Direct to the official Anthropic API (no local routing)
+#   ccs <provider> [args…]  Route through the cc-switch local proxy (x-ccs-provider
+#                          header), pinned to that provider; args pass to claude
 #
-# 示例:
-#   ccs                    # 官方
-#   ccs kimi               # 走本地路由 → Kimi
-#   ccs glm-router         # 走本地路由 → GLM 标准端点（自动协议转换）
-#   ccs kimi -c            # 走 Kimi 并继续上次会话
+# Examples:
+#   ccs                    # official
+#   ccs kimi               # routed -> Kimi
+#   ccs glm-router         # routed -> GLM standard endpoint (auto protocol conversion)
+#   ccs kimi -c            # routed -> Kimi, continue last session
 #
-# 供应商名 = cc-switch 界面里的名字，不区分大小写、支持部分匹配。
+# Provider name = the name shown in the cc-switch UI (case-insensitive, partial match).
 set -euo pipefail
-# 防 bash 3.2 在非 UTF-8 locale 下把紧邻变量的多字节字符解析进变量名
+# Prevent bash 3.2 from folding multibyte bytes into variable names under
+# non-UTF-8 locales (fixes "NAME<0xE3>: unbound variable")
 export LC_ALL=en_US.UTF-8
 
 case "${1:-}" in
   "")
-    # 官方直连：覆盖 base、清空 token（claude.ai 登录生效）
+    # Official API direct: override base URL and clear token (claude.ai login)
     exec claude --settings '{"env":{"ANTHROPIC_BASE_URL":"https://api.anthropic.com","ANTHROPIC_AUTH_TOKEN":""}}'
     ;;
   -h|--help|help)
@@ -30,26 +31,26 @@ esac
 NAME="$1"; shift
 case "$NAME" in
   *'"'|*'\'*)
-    echo "ccs: 供应商名含非法字符（引号/反斜杠）" >&2
+    echo "ccs: provider name contains illegal characters (quotes/backslash)" >&2
     exit 1 ;;
 esac
 
-# 预检本地路由端口
+# Pre-check local routing port
 if ! nc -z 127.0.0.1 15721 2>/dev/null; then
-  echo "⚠️ cc-switch 本地路由（127.0.0.1:15721）未运行——请启动 CC Switch Router 并开启路由接管" >&2
+  echo "ccs: local routing (127.0.0.1:15721) is not running -- start CC Switch Router and enable routing takeover" >&2
   exit 1
 fi
 
-# 供应商存在性校验（只读查询；sqlite3 缺失则跳过校验）
+# Provider existence check (read-only; skipped if sqlite3 is unavailable)
 if command -v sqlite3 >/dev/null 2>&1 && [ -f "$HOME/.cc-switch/cc-switch.db" ]; then
   SAFE=${NAME//\'/}
   HIT=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
     "SELECT COUNT(*) FROM providers WHERE app_type='claude' AND name LIKE '%'||'$SAFE'||'%'" 2>/dev/null || echo 1)
   if [ "${HIT:-0}" = "0" ]; then
-    echo "ccs: cc-switch 里没有匹配 ${NAME} 的供应商（需与 cc-switch 中名字一致）" >&2
+    echo "ccs: no Claude provider matching '${NAME}' in cc-switch (name must match the cc-switch UI)" >&2
     exit 1
   fi
 fi
 
-# 经本地路由：注入 x-ccs-provider 请求头（其余配置沿用全局接管）
+# Route through the local proxy: inject x-ccs-provider header
 exec claude --settings "{\"env\":{\"ANTHROPIC_CUSTOM_HEADERS\":\"x-ccs-provider: ${NAME}\"}}" "$@"
