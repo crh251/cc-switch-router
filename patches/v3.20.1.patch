@@ -89,7 +89,7 @@ index 0000000..8a1d4ba
 +  printf "%s" "$file"
 +}
 +
- case "${1:-}" in
++case "${1:-}" in
 +  "")
 +    OFFICIAL_SETTINGS_FILE=$(make_official_settings_file)
 +    exec claude --setting-sources "" --settings "${OFFICIAL_SETTINGS_FILE}"
@@ -567,7 +567,7 @@ index 70b35a7..8851b36 100644
 +            .await
 +            .unwrap()
 +            .expect("应命中 GLM");
-+        assert_eq!(hit.id, "b");
++        assert_eq!(hit.name, "Zhipu GLM - router");
 +
 +        // 按 id 命中
 +        let hit = router
