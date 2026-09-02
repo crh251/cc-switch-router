@@ -1,9 +1,9 @@
 diff --git a/src-tauri/resources/ccs b/src-tauri/resources/ccs
 new file mode 100755
-index 0000000..37440f8
+index 0000000..8a1d4ba
 --- /dev/null
 +++ b/src-tauri/resources/ccs
-@@ -0,0 +1,83 @@
+@@ -0,0 +1,183 @@
 +#!/usr/bin/env bash
 +# ccs — Claude Code per-terminal provider switching
 +# (requires the patched CC Switch Router running with routing takeover enabled)
@@ -24,10 +24,80 @@ index 0000000..37440f8
 +# non-UTF-8 locales (fixes "NAME<0xE3>: unbound variable")
 +export LC_ALL=en_US.UTF-8
 +
-+case "${1:-}" in
-+  ""|official|anthropic)
-+    # Official API direct: override base URL and clear token (claude.ai login)
-+    exec claude --settings '{"env":{"ANTHROPIC_BASE_URL":"https://api.anthropic.com","ANTHROPIC_AUTH_TOKEN":""}}'
++SETTINGS_DIR="${HOME}/.cc-switch/claude-settings"
++mkdir -p "${SETTINGS_DIR}"
++
++json_escape() {
++  printf "%s" "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
++}
++
++append_env_if_set() {
++  local key="$1"
++  local value="$2"
++  if [ -n "$value" ]; then
++    printf ',\n    "%s": "%s"' "$key" "$(json_escape "$value")"
++  fi
++}
++
++make_settings_file() {
++  local provider="$1"
++  local safe
++  safe=$(printf "%s" "$provider" | LC_ALL=C tr -cs 'A-Za-z0-9._-' '_' | sed 's/^_\+//;s/_\+$//')
++  [ -n "$safe" ] || safe="provider"
++  local file="${SETTINGS_DIR}/${safe}.json"
++  local tmp="${file}.tmp.$$"
++
++  {
++    printf '{\n'
++    printf '  "env": {\n'
++    printf '    "ANTHROPIC_CUSTOM_HEADERS": "x-ccs-provider: %s"' "$(json_escape "$provider")"
++
++    append_env_if_set "ANTHROPIC_MODEL" "${PROVIDER_MODEL:-}"
++    append_env_if_set "ANTHROPIC_DEFAULT_MODEL" "${PROVIDER_DEFAULT_MODEL:-}"
++    append_env_if_set "ANTHROPIC_DEFAULT_MODEL_NAME" "${PROVIDER_DEFAULT_MODEL_NAME:-}"
++    append_env_if_set "ANTHROPIC_DEFAULT_OPUS_MODEL" "${PROVIDER_DEFAULT_OPUS_MODEL:-}"
++    append_env_if_set "ANTHROPIC_DEFAULT_FABLE_MODEL" "${PROVIDER_DEFAULT_FABLE_MODEL:-}"
++    append_env_if_set "ANTHROPIC_DEFAULT_SONNET_MODEL" "${PROVIDER_DEFAULT_SONNET_MODEL:-}"
++    append_env_if_set "ANTHROPIC_DEFAULT_HAIKU_MODEL" "${PROVIDER_DEFAULT_HAIKU_MODEL:-}"
++    append_env_if_set "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME" "${PROVIDER_DEFAULT_OPUS_MODEL_NAME:-}"
++    append_env_if_set "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME" "${PROVIDER_DEFAULT_FABLE_MODEL_NAME:-}"
++    append_env_if_set "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME" "${PROVIDER_DEFAULT_SONNET_MODEL_NAME:-}"
++    append_env_if_set "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME" "${PROVIDER_DEFAULT_HAIKU_MODEL_NAME:-}"
++    append_env_if_set "ANTHROPIC_SMALL_FAST_MODEL" "${PROVIDER_SMALL_FAST_MODEL:-}"
++
++    printf '\n  }\n'
++    printf '}\n'
++  } > "$tmp"
++
++  mv "$tmp" "$file"
++  printf "%s" "$file"
++}
++
++make_official_settings_file() {
++  local file="${SETTINGS_DIR}/official.json"
++  local tmp="${file}.tmp.$$"
++
++  cat > "$tmp" <<'EOF'
++{
++  "env": {
++    "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
++    "ANTHROPIC_AUTH_TOKEN": ""
++  }
++}
++EOF
++  mv "$tmp" "$file"
++  printf "%s" "$file"
++}
++
+ case "${1:-}" in
++  "")
++    OFFICIAL_SETTINGS_FILE=$(make_official_settings_file)
++    exec claude --setting-sources "" --settings "${OFFICIAL_SETTINGS_FILE}"
++    ;;
++  official|anthropic|claude)
++    shift
++    OFFICIAL_SETTINGS_FILE=$(make_official_settings_file)
++    exec claude --setting-sources "" --settings "${OFFICIAL_SETTINGS_FILE}" "$@"
 +    ;;
 +  -h|--help|help)
 +    grep '^# ' "$0" | sed 's/^# \{0,1\}//'
@@ -82,11 +152,40 @@ index 0000000..37440f8
 +  exit 1
 +fi
 +
++if [ "$DB_CHECK_OK" = "1" ]; then
++  PROVIDER_MODEL=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
++    "SELECT json_extract(settings_config,'$.env.ANTHROPIC_MODEL') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
++  PROVIDER_DEFAULT_MODEL=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
++    "SELECT json_extract(settings_config,'$.env.ANTHROPIC_DEFAULT_MODEL') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
++  PROVIDER_DEFAULT_MODEL_NAME=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
++    "SELECT json_extract(settings_config,'$.env.ANTHROPIC_DEFAULT_MODEL_NAME') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
++  PROVIDER_DEFAULT_OPUS_MODEL=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
++    "SELECT json_extract(settings_config,'$.env.ANTHROPIC_DEFAULT_OPUS_MODEL') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
++  PROVIDER_DEFAULT_FABLE_MODEL=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
++    "SELECT json_extract(settings_config,'$.env.ANTHROPIC_DEFAULT_FABLE_MODEL') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
++  PROVIDER_DEFAULT_SONNET_MODEL=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
++    "SELECT json_extract(settings_config,'$.env.ANTHROPIC_DEFAULT_SONNET_MODEL') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
++  PROVIDER_DEFAULT_HAIKU_MODEL=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
++    "SELECT json_extract(settings_config,'$.env.ANTHROPIC_DEFAULT_HAIKU_MODEL') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
++  PROVIDER_DEFAULT_OPUS_MODEL_NAME=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
++    "SELECT json_extract(settings_config,'$.env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
++  PROVIDER_DEFAULT_FABLE_MODEL_NAME=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
++    "SELECT json_extract(settings_config,'$.env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
++  PROVIDER_DEFAULT_SONNET_MODEL_NAME=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
++    "SELECT json_extract(settings_config,'$.env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
++  PROVIDER_DEFAULT_HAIKU_MODEL_NAME=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
++    "SELECT json_extract(settings_config,'$.env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
++  PROVIDER_SMALL_FAST_MODEL=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
++    "SELECT json_extract(settings_config,'$.env.ANTHROPIC_SMALL_FAST_MODEL') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
++fi
++
 +echo "ccs: provider \"${FULL_NAME}\"" >&2
 +sleep 1
 +
++SETTINGS_FILE=$(make_settings_file "${FULL_NAME}")
++
 +# Route through the local proxy: inject x-ccs-provider header (canonical name)
-+exec claude --settings "{\"env\":{\"ANTHROPIC_CUSTOM_HEADERS\":\"x-ccs-provider: ${FULL_NAME}\"}}" "$@"
++exec claude --setting-sources "" --settings "${SETTINGS_FILE}" "$@"
 diff --git a/src-tauri/src/ccs_router.rs b/src-tauri/src/ccs_router.rs
 new file mode 100644
 index 0000000..9ba56ac
@@ -182,30 +281,132 @@ diff --git a/src-tauri/src/lib.rs b/src-tauri/src/lib.rs
 index 36b76cb..f6113be 100644
 --- a/src-tauri/src/lib.rs
 +++ b/src-tauri/src/lib.rs
-@@ -7,6 +7,7 @@ mod claude_plugin;
+@@ -7,6 +7,8 @@ mod claude_plugin;
  mod codex_config;
  mod codex_history_migration;
  mod codex_state_db;
 +mod ccs_router;
++mod safety_bypass;
  mod commands;
  mod config;
  mod database;
-@@ -499,6 +500,9 @@ pub fn run() {
+@@ -499,6 +501,9 @@ pub fn run() {
              // 让 Store 损坏或路径无效等启动警告能够真正落盘。
              let _ = app_store::refresh_app_config_dir_override(app.handle());
- 
+
 +            // ccs：把随包的 ccs 脚本软链接到 PATH 目录（幂等，失败仅告警不阻断启动）
 +            ccs_router::install_on_startup(app.handle());
 +
              #[cfg(target_os = "windows")]
              set_windows_app_user_model_id(app.handle());
- 
+
+diff --git a/src-tauri/src/safety_bypass.rs b/src-tauri/src/safety_bypass.rs
+new file mode 100644
+index 0000000..e123456
+--- /dev/null
++++ b/src-tauri/src/safety_bypass.rs
+@@ -0,0 +1,96 @@
++//! Auto Mode 安全分类器审查请求的官方直连旁路
++//!
++//! 当客户端处于 Auto Mode 并在第三方供应商下执行敏感命令时，Claude Code 会发出非流式安全判定请求。
++//! 本模块负责识别这类请求，并从 macOS Keychain ("Claude Code-credentials") 提取官方凭据，
++//! 绕过第三方协议转换与路由，直连官方 api.anthropic.com。
++
++use std::process::Command;
++use std::sync::RwLock;
++use std::time::{Duration, Instant};
++
++static KEYCHAIN_TOKEN_CACHE: RwLock<Option<(String, Instant)>> = RwLock::new(None);
++
++/// 判断是否为 Claude Code Auto Mode 安全分类器请求
++pub fn is_safety_classifier_request(body: &serde_json::Value) -> bool {
++    // 1. 检查 system prompt
++    if let Some(system) = body.get("system") {
++        let system_str = if let Some(s) = system.as_str() {
++            s.to_string()
++        } else if let Some(arr) = system.as_array() {
++            arr.iter()
++                .filter_map(|v| v.get("text").and_then(|t| t.as_str()))
++                .collect::<Vec<_>>()
++                .join(" ")
++        } else {
++            String::new()
++        };
++
++        if system_str.contains("classifier")
++            || system_str.contains("safety")
++            || system_str.contains("determine the safety")
++            || system_str.contains("safe to execute")
++        {
++            return true;
++        }
++    }
++
++    // 2. 检查 messages 中的特征
++    if let Some(messages) = body.get("messages").and_then(|m| m.as_array()) {
++        for msg in messages {
++            if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
++                if content.contains("evaluate the safety")
++                    || content.contains("Is this command safe")
++                    || content.contains("determine whether the following command is safe")
++                {
++                    return true;
++                }
++            }
++        }
++    }
++
++    false
++}
++
++/// 从 macOS Keychain 中读取 Claude Code 官方 Access Token
++pub fn get_claude_keychain_token() -> Option<String> {
++    #[cfg(target_os = "macos")]
++    {
++        // 优先读取缓存（5分钟 TTL）
++        if let Ok(read_guard) = KEYCHAIN_TOKEN_CACHE.read() {
++            if let Some((token, timestamp)) = &*read_guard {
++                if timestamp.elapsed() < Duration::from_secs(300) {
++                    return Some(token.clone());
++                }
++            }
++        }
++
++        // 调用系统 security 命令读取 "Claude Code-credentials"
++        let output = Command::new("/usr/bin/security")
++            .args(&["find-generic-password", "-s", "Claude Code-credentials", "-w"])
++            .output()
++            .ok()?;
++
++        if output.status.success() {
++            let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
++            if !raw.is_empty() {
++                // 解析 JSON 中的 claudeAiOauth.accessToken
++                let token = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) {
++                    json.get("claudeAiOauth")
++                        .and_then(|oauth| oauth.get("accessToken"))
++                        .and_then(|t| t.as_str())
++                        .unwrap_or(&raw)
++                        .to_string()
++                } else {
++                    raw
++                };
++
++                if let Ok(mut write_guard) = KEYCHAIN_TOKEN_CACHE.write() {
++                    *write_guard = Some((token.clone(), Instant::now()));
++                }
++                return Some(token);
++            }
++        }
++    }
++    None
++}
 diff --git a/src-tauri/src/proxy/handler_context.rs b/src-tauri/src/proxy/handler_context.rs
 index 29be37d..3f796b1 100644
 --- a/src-tauri/src/proxy/handler_context.rs
 +++ b/src-tauri/src/proxy/handler_context.rs
 @@ -131,17 +131,53 @@ impl RequestContext {
- 
+
          // 使用共享的 ProviderRouter 选择 Provider（熔断器状态跨请求保持）
          // 注意：只在这里调用一次，结果传递给 forwarder，避免重复消耗 HalfOpen 名额
 -        let providers = state
@@ -265,9 +466,42 @@ index 29be37d..3f796b1 100644
 +            crate::error::AppError::NoProvidersConfigured => ProxyError::NoProvidersConfigured,
 +            _ => ProxyError::DatabaseError(e.to_string()),
 +        })?;
- 
+
          let provider = providers
              .first()
+@@ -150,6 +186,30 @@ impl RequestContext {
+             })?
+             .clone();
+
++        // Auto Mode 安全分类器官方直连旁路：
++        // 当不是 Claude Official 供应商且请求属于安全审查时，动态构建官方直连 Provider 并指定 sonnet-5 模型
++        let (provider, request_model) = if provider.name != "Claude Official"
++            && crate::safety_bypass::is_safety_classifier_request(&request_body)
++        {
++            if let Some(token) = crate::safety_bypass::get_claude_keychain_token() {
++                log::info!(
++                    "[{}] [SafetyBypass] 捕获到 Auto Mode 安全分类审查请求，自动切换为 macOS Keychain 官方直连旁路 (使用 claude-sonnet-5)",
++                    tag
++                );
++                let official = Provider::with_id(
++                    "claude-safety-bypass".to_string(),
++                    "Claude Official (Safety Bypass)".to_string(),
++                    serde_json::json!({
++                        "api_key": token,
++                        "base_url": "https://api.anthropic.com"
++                    }),
++                    None,
++                );
++                (official, "claude-sonnet-5".to_string())
++            } else {
++                (provider, request_model)
++            }
++        } else {
++            (provider, request_model)
++        };
++
+         let provider_name = provider.name.clone();
+         let provider_id = provider.id.clone();
 diff --git a/src-tauri/src/proxy/provider_router.rs b/src-tauri/src/proxy/provider_router.rs
 index 70b35a7..8851b36 100644
 --- a/src-tauri/src/proxy/provider_router.rs
@@ -275,7 +509,7 @@ index 70b35a7..8851b36 100644
 @@ -130,6 +130,22 @@ impl ProviderRouter {
          Ok(result)
      }
- 
+
 +    /// 按显式覆盖（`x-ccs-provider` 请求头）选择供应商
 +    ///
 +    /// 在该应用的全部供应商中按名字（忽略大小写）或 id 匹配；命中返回单个供应商
@@ -298,7 +532,7 @@ index 70b35a7..8851b36 100644
 @@ -403,6 +419,60 @@ mod tests {
          assert_eq!(providers[0].id, "a");
      }
- 
+
 +    #[tokio::test]
 +    #[serial]
 +    async fn test_select_provider_by_override() {

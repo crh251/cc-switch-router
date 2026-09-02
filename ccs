@@ -18,10 +18,80 @@ set -euo pipefail
 # non-UTF-8 locales (fixes "NAME<0xE3>: unbound variable")
 export LC_ALL=en_US.UTF-8
 
+SETTINGS_DIR="${HOME}/.cc-switch/claude-settings"
+mkdir -p "${SETTINGS_DIR}"
+
+json_escape() {
+  printf "%s" "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+append_env_if_set() {
+  local key="$1"
+  local value="$2"
+  if [ -n "$value" ]; then
+    printf ',\n    "%s": "%s"' "$key" "$(json_escape "$value")"
+  fi
+}
+
+make_settings_file() {
+  local provider="$1"
+  local safe
+  safe=$(printf "%s" "$provider" | LC_ALL=C tr -cs 'A-Za-z0-9._-' '_' | sed 's/^_\+//;s/_\+$//')
+  [ -n "$safe" ] || safe="provider"
+  local file="${SETTINGS_DIR}/${safe}.json"
+  local tmp="${file}.tmp.$$"
+
+  {
+    printf '{\n'
+    printf '  "env": {\n'
+    printf '    "ANTHROPIC_CUSTOM_HEADERS": "x-ccs-provider: %s"' "$(json_escape "$provider")"
+
+    append_env_if_set "ANTHROPIC_MODEL" "${PROVIDER_MODEL:-}"
+    append_env_if_set "ANTHROPIC_DEFAULT_MODEL" "${PROVIDER_DEFAULT_MODEL:-}"
+    append_env_if_set "ANTHROPIC_DEFAULT_MODEL_NAME" "${PROVIDER_DEFAULT_MODEL_NAME:-}"
+    append_env_if_set "ANTHROPIC_DEFAULT_OPUS_MODEL" "${PROVIDER_DEFAULT_OPUS_MODEL:-}"
+    append_env_if_set "ANTHROPIC_DEFAULT_FABLE_MODEL" "${PROVIDER_DEFAULT_FABLE_MODEL:-}"
+    append_env_if_set "ANTHROPIC_DEFAULT_SONNET_MODEL" "${PROVIDER_DEFAULT_SONNET_MODEL:-}"
+    append_env_if_set "ANTHROPIC_DEFAULT_HAIKU_MODEL" "${PROVIDER_DEFAULT_HAIKU_MODEL:-}"
+    append_env_if_set "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME" "${PROVIDER_DEFAULT_OPUS_MODEL_NAME:-}"
+    append_env_if_set "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME" "${PROVIDER_DEFAULT_FABLE_MODEL_NAME:-}"
+    append_env_if_set "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME" "${PROVIDER_DEFAULT_SONNET_MODEL_NAME:-}"
+    append_env_if_set "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME" "${PROVIDER_DEFAULT_HAIKU_MODEL_NAME:-}"
+    append_env_if_set "ANTHROPIC_SMALL_FAST_MODEL" "${PROVIDER_SMALL_FAST_MODEL:-}"
+
+    printf '\n  }\n'
+    printf '}\n'
+  } > "$tmp"
+
+  mv "$tmp" "$file"
+  printf "%s" "$file"
+}
+
+make_official_settings_file() {
+  local file="${SETTINGS_DIR}/official.json"
+  local tmp="${file}.tmp.$$"
+
+  cat > "$tmp" <<'EOF'
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
+    "ANTHROPIC_AUTH_TOKEN": ""
+  }
+}
+EOF
+  mv "$tmp" "$file"
+  printf "%s" "$file"
+}
+
 case "${1:-}" in
-  ""|official|anthropic)
-    # Official API direct: override base URL and clear token (claude.ai login)
-    exec claude --settings '{"env":{"ANTHROPIC_BASE_URL":"https://api.anthropic.com","ANTHROPIC_AUTH_TOKEN":""}}'
+  "")
+    OFFICIAL_SETTINGS_FILE=$(make_official_settings_file)
+    exec claude --setting-sources "" --settings "${OFFICIAL_SETTINGS_FILE}"
+    ;;
+  official|anthropic|claude)
+    shift
+    OFFICIAL_SETTINGS_FILE=$(make_official_settings_file)
+    exec claude --setting-sources "" --settings "${OFFICIAL_SETTINGS_FILE}" "$@"
     ;;
   -h|--help|help)
     grep '^# ' "$0" | sed 's/^# \{0,1\}//'
@@ -76,8 +146,37 @@ if [ "$DB_CHECK_OK" = "1" ] && [ -z "$FULL_NAME" ]; then
   exit 1
 fi
 
+if [ "$DB_CHECK_OK" = "1" ]; then
+  PROVIDER_MODEL=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
+    "SELECT json_extract(settings_config,'$.env.ANTHROPIC_MODEL') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
+  PROVIDER_DEFAULT_MODEL=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
+    "SELECT json_extract(settings_config,'$.env.ANTHROPIC_DEFAULT_MODEL') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
+  PROVIDER_DEFAULT_MODEL_NAME=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
+    "SELECT json_extract(settings_config,'$.env.ANTHROPIC_DEFAULT_MODEL_NAME') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
+  PROVIDER_DEFAULT_OPUS_MODEL=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
+    "SELECT json_extract(settings_config,'$.env.ANTHROPIC_DEFAULT_OPUS_MODEL') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
+  PROVIDER_DEFAULT_FABLE_MODEL=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
+    "SELECT json_extract(settings_config,'$.env.ANTHROPIC_DEFAULT_FABLE_MODEL') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
+  PROVIDER_DEFAULT_SONNET_MODEL=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
+    "SELECT json_extract(settings_config,'$.env.ANTHROPIC_DEFAULT_SONNET_MODEL') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
+  PROVIDER_DEFAULT_HAIKU_MODEL=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
+    "SELECT json_extract(settings_config,'$.env.ANTHROPIC_DEFAULT_HAIKU_MODEL') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
+  PROVIDER_DEFAULT_OPUS_MODEL_NAME=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
+    "SELECT json_extract(settings_config,'$.env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
+  PROVIDER_DEFAULT_FABLE_MODEL_NAME=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
+    "SELECT json_extract(settings_config,'$.env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
+  PROVIDER_DEFAULT_SONNET_MODEL_NAME=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
+    "SELECT json_extract(settings_config,'$.env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
+  PROVIDER_DEFAULT_HAIKU_MODEL_NAME=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
+    "SELECT json_extract(settings_config,'$.env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
+  PROVIDER_SMALL_FAST_MODEL=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
+    "SELECT json_extract(settings_config,'$.env.ANTHROPIC_SMALL_FAST_MODEL') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
+fi
+
 echo "ccs: provider \"${FULL_NAME}\"" >&2
 sleep 1
 
+SETTINGS_FILE=$(make_settings_file "${FULL_NAME}")
+
 # Route through the local proxy: inject x-ccs-provider header (canonical name)
-exec claude --settings "{\"env\":{\"ANTHROPIC_CUSTOM_HEADERS\":\"x-ccs-provider: ${FULL_NAME}\"}}" "$@"
+exec claude --setting-sources "" --settings "${SETTINGS_FILE}" "$@"

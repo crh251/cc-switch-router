@@ -14,11 +14,12 @@
 
 workflow 流程：下载所选版本的上游源码 tarball → `git apply patches/<所选版本>.patch` → `pnpm tauri build --target aarch64-apple-darwin` → `hdiutil` 打包 DMG → 发布到本仓库 Release。
 
-补丁的三处修改：
+补丁的四处修改：
 
 1. `provider_router.rs`：新增 `select_provider_by_override()` —— 按请求头指定的名字/ID 显式选择供应商
-2. `handler_context.rs`：读 `x-ccs-provider` 请求头，命中则该请求固定路由到指定供应商（跳过全局"当前供应商"与故障转移），未命中回退
-3. `tauri.conf.json`：`createUpdaterArtifacts: false` + 删除 `plugins.updater`（自编译无需签名 key；防止官方更新覆盖补丁版）
+2. `handler_context.rs`：读 `x-ccs-provider` 请求头，命中则该请求固定路由到指定供应商（跳过全局"当前供应商"与故障转移），未命中回退；新增 Auto Mode 安全分类器审查官方直连旁路拦截
+3. `safety_bypass.rs`：新增安全分类器审查识别与 macOS Keychain（`Claude Code-credentials`）官方 Token 读取与 5 分钟缓存
+4. `tauri.conf.json`：`createUpdaterArtifacts: false` + 删除 `plugins.updater`（自编译无需签名 key；防止官方更新覆盖补丁版）
 
 每个版本的补丁都是对**该版本源码**生成的标准 diff，因此旧版本随时可以重新构建，永远能干净套用。
 
