@@ -411,8 +411,102 @@ new file mode 100644
 index 0000000..576dd6a
 --- /dev/null
 +++ b/src-tauri/src/safety_bypass.rs
-@@ -0,0 +1 @@
+@@ -0,0 +1,95 @@
 +//! Auto Mode 安全分类器审查请求的官方直连旁路
++//!
++//! 当客户端处于 Auto Mode 并在第三方供应商下执行敏感命令时，Claude Code 会发出非流式安全判定请求。
++//! 本模块负责识别这类请求，并从 macOS Keychain ("Claude Code-credentials") 提取官方凭据，
++//! 绕过第三方协议转换与路由，直连官方 api.anthropic.com。
++
++use std::process::Command;
++use std::sync::RwLock;
++use std::time::{Duration, Instant};
++
++static KEYCHAIN_TOKEN_CACHE: RwLock<Option<(String, Instant)>> = RwLock::new(None);
++
++/// 判断是否为 Claude Code Auto Mode 安全分类器请求
++pub fn is_safety_classifier_request(body: &serde_json::Value) -> bool {
++    // 1. 检查 system prompt
++    if let Some(system) = body.get("system") {
++        let system_str = if let Some(s) = system.as_str() {
++            s.to_string()
++        } else if let Some(arr) = system.as_array() {
++            arr.iter()
++                .filter_map(|v| v.get("text").and_then(|t| t.as_str()))
++                .collect::<Vec<_>>()
++                .join(" ")
++        } else {
++            String::new()
++        };
++
++        if system_str.contains("classifier")
++            || system_str.contains("safety")
++            || system_str.contains("determine the safety")
++            || system_str.contains("safe to execute")
++        {
++            return true;
++        }
++    }
++
++    // 2. 检查 messages 中的特征
++    if let Some(messages) = body.get("messages").and_then(|m| m.as_array()) {
++        for msg in messages {
++            if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
++                if content.contains("evaluate the safety")
++                    || content.contains("Is this command safe")
++                    || content.contains("determine whether the following command is safe")
++                {
++                    return true;
++                }
++            }
++        }
++    }
++
++    false
++}
++
++/// 从 macOS Keychain 中读取 Claude Code 官方 Access Token
++pub fn get_claude_keychain_token() -> Option<String> {
++    #[cfg(target_os = "macos")]
++    {
++        // 优先读取缓存（5分钟 TTL）
++        if let Ok(read_guard) = KEYCHAIN_TOKEN_CACHE.read() {
++            if let Some((token, timestamp)) = &*read_guard {
++                if timestamp.elapsed() < Duration::from_secs(300) {
++                    return Some(token.clone());
++                }
++            }
++        }
++
++        // 调用系统 security 命令读取 "Claude Code-credentials"
++        let output = Command::new("/usr/bin/security")
++            .args(&["find-generic-password", "-s", "Claude Code-credentials", "-w"])
++            .output()
++            .ok()?;
++
++        if output.status.success() {
++            let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
++            if !raw.is_empty() {
++                // 解析 JSON 中的 claudeAiOauth.accessToken
++                let token = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) {
++                    json.get("claudeAiOauth")
++                        .and_then(|oauth| oauth.get("accessToken"))
++                        .and_then(|t| t.as_str())
++                        .unwrap_or(&raw)
++                        .to_string()
++                } else {
++                    raw
++                };
++
++                if let Ok(mut write_guard) = KEYCHAIN_TOKEN_CACHE.write() {
++                    *write_guard = Some((token.clone(), Instant::now()));
++                }
++                return Some(token);
++            }
++        }
++    }
++    None
++}
 diff --git a/src-tauri/tauri.conf.json b/src-tauri/tauri.conf.json
 index 50aa7a7..df1cf1f 100644
 --- a/src-tauri/tauri.conf.json
