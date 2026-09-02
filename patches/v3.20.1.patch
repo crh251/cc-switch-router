@@ -1,9 +1,9 @@
 diff --git a/src-tauri/resources/ccs b/src-tauri/resources/ccs
-new file mode 100755
+new file mode 100644
 index 0000000..8a1d4ba
 --- /dev/null
 +++ b/src-tauri/resources/ccs
-@@ -0,0 +1,183 @@
+@@ -0,0 +1,182 @@
 +#!/usr/bin/env bash
 +# ccs — Claude Code per-terminal provider switching
 +# (requires the patched CC Switch Router running with routing takeover enabled)
@@ -278,7 +278,7 @@ index 0000000..9ba56ac
 +    }
 +}
 diff --git a/src-tauri/src/lib.rs b/src-tauri/src/lib.rs
-index 36b76cb..f6113be 100644
+index 36b76cb..009ee64 100644
 --- a/src-tauri/src/lib.rs
 +++ b/src-tauri/src/lib.rs
 @@ -7,6 +7,8 @@ mod claude_plugin;
@@ -293,190 +293,25 @@ index 36b76cb..f6113be 100644
 @@ -499,6 +501,9 @@ pub fn run() {
              // 让 Store 损坏或路径无效等启动警告能够真正落盘。
              let _ = app_store::refresh_app_config_dir_override(app.handle());
-
+ 
 +            // ccs：把随包的 ccs 脚本软链接到 PATH 目录（幂等，失败仅告警不阻断启动）
 +            ccs_router::install_on_startup(app.handle());
 +
              #[cfg(target_os = "windows")]
              set_windows_app_user_model_id(app.handle());
-
-diff --git a/src-tauri/src/safety_bypass.rs b/src-tauri/src/safety_bypass.rs
-new file mode 100644
-index 0000000..e123456
---- /dev/null
-+++ b/src-tauri/src/safety_bypass.rs
-@@ -0,0 +1,96 @@
-+//! Auto Mode 安全分类器审查请求的官方直连旁路
-+//!
-+//! 当客户端处于 Auto Mode 并在第三方供应商下执行敏感命令时，Claude Code 会发出非流式安全判定请求。
-+//! 本模块负责识别这类请求，并从 macOS Keychain ("Claude Code-credentials") 提取官方凭据，
-+//! 绕过第三方协议转换与路由，直连官方 api.anthropic.com。
-+
-+use std::process::Command;
-+use std::sync::RwLock;
-+use std::time::{Duration, Instant};
-+
-+static KEYCHAIN_TOKEN_CACHE: RwLock<Option<(String, Instant)>> = RwLock::new(None);
-+
-+/// 判断是否为 Claude Code Auto Mode 安全分类器请求
-+pub fn is_safety_classifier_request(body: &serde_json::Value) -> bool {
-+    // 1. 检查 system prompt
-+    if let Some(system) = body.get("system") {
-+        let system_str = if let Some(s) = system.as_str() {
-+            s.to_string()
-+        } else if let Some(arr) = system.as_array() {
-+            arr.iter()
-+                .filter_map(|v| v.get("text").and_then(|t| t.as_str()))
-+                .collect::<Vec<_>>()
-+                .join(" ")
-+        } else {
-+            String::new()
-+        };
-+
-+        if system_str.contains("classifier")
-+            || system_str.contains("safety")
-+            || system_str.contains("determine the safety")
-+            || system_str.contains("safe to execute")
-+        {
-+            return true;
-+        }
-+    }
-+
-+    // 2. 检查 messages 中的特征
-+    if let Some(messages) = body.get("messages").and_then(|m| m.as_array()) {
-+        for msg in messages {
-+            if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
-+                if content.contains("evaluate the safety")
-+                    || content.contains("Is this command safe")
-+                    || content.contains("determine whether the following command is safe")
-+                {
-+                    return true;
-+                }
-+            }
-+        }
-+    }
-+
-+    false
-+}
-+
-+/// 从 macOS Keychain 中读取 Claude Code 官方 Access Token
-+pub fn get_claude_keychain_token() -> Option<String> {
-+    #[cfg(target_os = "macos")]
-+    {
-+        // 优先读取缓存（5分钟 TTL）
-+        if let Ok(read_guard) = KEYCHAIN_TOKEN_CACHE.read() {
-+            if let Some((token, timestamp)) = &*read_guard {
-+                if timestamp.elapsed() < Duration::from_secs(300) {
-+                    return Some(token.clone());
-+                }
-+            }
-+        }
-+
-+        // 调用系统 security 命令读取 "Claude Code-credentials"
-+        let output = Command::new("/usr/bin/security")
-+            .args(&["find-generic-password", "-s", "Claude Code-credentials", "-w"])
-+            .output()
-+            .ok()?;
-+
-+        if output.status.success() {
-+            let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
-+            if !raw.is_empty() {
-+                // 解析 JSON 中的 claudeAiOauth.accessToken
-+                let token = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) {
-+                    json.get("claudeAiOauth")
-+                        .and_then(|oauth| oauth.get("accessToken"))
-+                        .and_then(|t| t.as_str())
-+                        .unwrap_or(&raw)
-+                        .to_string()
-+                } else {
-+                    raw
-+                };
-+
-+                if let Ok(mut write_guard) = KEYCHAIN_TOKEN_CACHE.write() {
-+                    *write_guard = Some((token.clone(), Instant::now()));
-+                }
-+                return Some(token);
-+            }
-+        }
-+    }
-+    None
-+}
+ 
 diff --git a/src-tauri/src/proxy/handler_context.rs b/src-tauri/src/proxy/handler_context.rs
-index 29be37d..3f796b1 100644
+index 29be37d..a5ab33a 100644
 --- a/src-tauri/src/proxy/handler_context.rs
 +++ b/src-tauri/src/proxy/handler_context.rs
-@@ -131,17 +131,53 @@ impl RequestContext {
-
-         // 使用共享的 ProviderRouter 选择 Provider（熔断器状态跨请求保持）
-         // 注意：只在这里调用一次，结果传递给 forwarder，避免重复消耗 HalfOpen 名额
--        let providers = state
--            .provider_router
--            .select_providers(app_type_str)
--            .await
--            .map_err(|e| match e {
--                crate::error::AppError::AllProvidersCircuitOpen => {
--                    ProxyError::AllProvidersCircuitOpen
-+        //
-+        // ccs 扩展：请求头 `x-ccs-provider: <供应商名|id>` 显式指定供应商（终端级隔离），
-+        // 命中时跳过当前供应商与故障转移；未命中或不带头时走默认选择逻辑。
-+        let ccs_provider_override = headers
-+            .get("x-ccs-provider")
-+            .and_then(|value| value.to_str().ok())
-+            .map(str::trim)
-+            .filter(|value| !value.is_empty())
-+            .map(str::to_string);
-+
-+        let providers_result = if let Some(override_ref) = ccs_provider_override.as_deref() {
-+            match state
-+                .provider_router
-+                .select_provider_by_override(app_type_str, override_ref)
-+                .await
-+            {
-+                Ok(Some(provider)) => {
-+                    log::info!(
-+                        "[{}] [ccs] x-ccs-provider 命中: {} ({}), model: {}",
-+                        tag,
-+                        provider.name,
-+                        provider.id,
-+                        request_model
-+                    );
-+                    Ok(vec![provider])
-+                }
-+                Ok(None) => {
-+                    log::warn!(
-+                        "[{}] [ccs] x-ccs-provider '{override_ref}' 未匹配任何供应商，回退默认选择",
-+                        tag
-+                    );
-+                    state.provider_router.select_providers(app_type_str).await
-                 }
--                crate::error::AppError::NoProvidersConfigured => ProxyError::NoProvidersConfigured,
--                _ => ProxyError::DatabaseError(e.to_string()),
--            })?;
-+                Err(e) => Err(e),
-+            }
-+        } else {
-+            state
-+                .provider_router
-+                .select_providers(app_type_str)
-+                .await
-+        };
-+
-+        let providers = providers_result.map_err(|e| match e {
-+            crate::error::AppError::AllProvidersCircuitOpen => ProxyError::AllProvidersCircuitOpen,
-+            crate::error::AppError::NoProvidersConfigured => ProxyError::NoProvidersConfigured,
-+            _ => ProxyError::DatabaseError(e.to_string()),
-+        })?;
-
-         let provider = providers
+@@ -147,6 +147,32 @@ impl RequestContext {
              .first()
-@@ -150,6 +186,30 @@ impl RequestContext {
-             })?
-             .clone();
-
+             .cloned()
+             .ok_or(ProxyError::NoAvailableProvider)?;
 +        // Auto Mode 安全分类器官方直连旁路：
 +        // 当不是 Claude Official 供应商且请求属于安全审查时，动态构建官方直连 Provider 并指定 sonnet-5 模型
 +        let (provider, request_model) = if provider.name != "Claude Official"
-+            && crate::safety_bypass::is_safety_classifier_request(&request_body)
++            && crate::safety_bypass::is_safety_classifier_request(&body)
 +        {
 +            if let Some(token) = crate::safety_bypass::get_claude_keychain_token() {
 +                log::info!(
@@ -499,17 +334,17 @@ index 29be37d..3f796b1 100644
 +        } else {
 +            (provider, request_model)
 +        };
-+
-         let provider_name = provider.name.clone();
-         let provider_id = provider.id.clone();
+ 
+         log::debug!(
+             "[{}] Provider: {}, model: {}, failover chain: {} providers, session: {}",
 diff --git a/src-tauri/src/proxy/provider_router.rs b/src-tauri/src/proxy/provider_router.rs
-index 70b35a7..8851b36 100644
+index 70b35a7..2147090 100644
 --- a/src-tauri/src/proxy/provider_router.rs
 +++ b/src-tauri/src/proxy/provider_router.rs
 @@ -130,6 +130,22 @@ impl ProviderRouter {
          Ok(result)
      }
-
+ 
 +    /// 按显式覆盖（`x-ccs-provider` 请求头）选择供应商
 +    ///
 +    /// 在该应用的全部供应商中按名字（忽略大小写）或 id 匹配；命中返回单个供应商
@@ -529,67 +364,55 @@ index 70b35a7..8851b36 100644
      /// 请求执行前获取熔断器“放行许可”
      ///
      /// - Closed：直接放行
-@@ -403,6 +419,60 @@ mod tests {
+@@ -403,6 +419,41 @@ mod tests {
          assert_eq!(providers[0].id, "a");
      }
-
+ 
 +    #[tokio::test]
 +    #[serial]
 +    async fn test_select_provider_by_override() {
 +        let _home = TempHome::new();
 +        let db = Arc::new(Database::memory().unwrap());
-+
-+        let provider_a = Provider::with_id("a".to_string(), "Kimi".to_string(), json!({}), None);
-+        let provider_b = Provider::with_id(
-+            "b".to_string(),
-+            "Zhipu GLM - router".to_string(),
-+            json!({}),
-+            None,
-+        );
-+
-+        db.save_provider("claude", &provider_a).unwrap();
-+        db.save_provider("claude", &provider_b).unwrap();
-+        db.set_current_provider("claude", "a").unwrap();
-+
-+        let router = ProviderRouter::new(db);
-+
-+        // 名字精确命中
-+        let hit = router
-+            .select_provider_by_override("claude", "Kimi")
++        let router = ProviderRouter::new(db.clone());
++        let p_a = make_provider("a", "ProvA", AppType::Claude, &[CircuitBreakerState::Closed]);
++        let p_b = make_provider("b", "ProvB", AppType::Claude, &[CircuitBreakerState::Closed]);
++        router
++            .db
++            .save_provider("claude", &p_a)
++            .expect("save a");
++        router
++            .db
++            .save_provider("claude", &p_b)
++            .expect("save b");
++        let by_name = router
++            .select_provider_by_override("claude", "prova")
 +            .await
-+            .unwrap()
-+            .expect("应命中 Kimi");
-+        assert_eq!(hit.id, "a");
-+
-+        // 名字忽略大小写 + 含空格
-+        let hit = router
-+            .select_provider_by_override("claude", "zhipu glm - ROUTER")
-+            .await
-+            .unwrap()
-+            .expect("应命中 GLM");
-+        assert_eq!(hit.name, "Zhipu GLM - router");
-+
-+        // 按 id 命中
-+        let hit = router
++            .expect("select by name")
++            .expect("hit");
++        assert_eq!(by_name.id, "a");
++        let by_id = router
 +            .select_provider_by_override("claude", "b")
 +            .await
-+            .unwrap()
-+            .expect("应按 id 命中");
-+        assert_eq!(hit.name, "Zhipu GLM - router");
-+
-+        // 未命中 → None
-+        assert!(
-+            router
-+                .select_provider_by_override("claude", "no-such-provider")
-+                .await
-+                .unwrap()
-+                .is_none()
-+        );
++            .expect("select by id")
++            .expect("hit");
++        assert_eq!(by_id.id, "b");
++        let miss = router
++            .select_provider_by_override("claude", "nope")
++            .await
++            .expect("select miss");
++        assert!(miss.is_none());
 +    }
 +
      #[tokio::test]
      #[serial]
      async fn test_failover_enabled_uses_queue_order_ignoring_current() {
+diff --git a/src-tauri/src/safety_bypass.rs b/src-tauri/src/safety_bypass.rs
+new file mode 100644
+index 0000000..576dd6a
+--- /dev/null
++++ b/src-tauri/src/safety_bypass.rs
+@@ -0,0 +1 @@
++//! Auto Mode 安全分类器审查请求的官方直连旁路
 diff --git a/src-tauri/tauri.conf.json b/src-tauri/tauri.conf.json
 index 50aa7a7..df1cf1f 100644
 --- a/src-tauri/tauri.conf.json
