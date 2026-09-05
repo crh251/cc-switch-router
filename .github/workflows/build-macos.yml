@@ -59,8 +59,11 @@ jobs:
         run: |
           SHORT_SHA="${GITHUB_SHA::7}"
           sed -i '' "s/\"version\": \"3.20.1\"/\"version\": \"3.20.1+${SHORT_SHA}\"/" src/src-tauri/tauri.conf.json
+          # ccs 脚本版本同步盖章：与 app 关于窗口显示同一短 commit id
+          sed -i '' "s/CCS_VERSION=\"[^\"]*\"/CCS_VERSION=\"${SHORT_SHA}\"/" src/src-tauri/resources/ccs
           echo "SHORT_SHA=$SHORT_SHA" >> "$GITHUB_ENV"
           grep '"version"' src/src-tauri/tauri.conf.json
+          grep 'CCS_VERSION=' src/src-tauri/resources/ccs | head -1
 
       - uses: actions/setup-node@v6
         with:
