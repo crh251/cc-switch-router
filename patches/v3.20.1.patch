@@ -1,9 +1,9 @@
 diff --git a/src-tauri/resources/ccs b/src-tauri/resources/ccs
 new file mode 100644
-index 0000000..1778457
+index 0000000..7b22282
 --- /dev/null
 +++ b/src-tauri/resources/ccs
-@@ -0,0 +1,336 @@
+@@ -0,0 +1,231 @@
 +#!/usr/bin/env bash
 +# ccs — Claude Code per-terminal provider switching
 +# (requires the patched CC Switch Router running with routing takeover enabled)
@@ -35,43 +35,17 @@ index 0000000..1778457
 +CCS_VERSION="dev"
 +# 默认继承用户级 ~/.claude/settings.json（不传 --setting-sources ""）：
 +# /model 才能显示 Custom 模型条目（隔离模式只会渲染官方目录）。
-+# 映射显示优先取 ccs 生成的 per-provider 文件（本终端钉住的供应商），
-+# 缺失的键回落到用户级文件；claude 对 settings 文件热加载，
++# per-provider settings 文件由 CC Switch Router 写入与维护（映射显示取
++# 本终端钉住供应商的那份，缺失的键回落到用户级文件）；claude 热加载 settings，
 +# cc-switch 改映射后 app 会自动重生成这些文件（补丁 v3.20.1-r3+）。
 +# CCS_ISOLATE=1 恢复隔离模式（不重定位配置目录，/model 无 Custom 条目实时性）。
 +ISOLATE="${CCS_ISOLATE:-0}"
 +
-+json_escape() {
-+  printf "%s" "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
-+}
 +
-+# 与 cc-switch 路由接管写 ~/.claude/settings.json 的模式保持一致：
-+#   _MODEL      = 官方档位别名 id（客户端实际发送，代理按档位关键词实时映射）
-+#   _MODEL_NAME = 映射后的上游名（仅 /model 展示用，settings 文件热加载后即时刷新）
-+# 客户端永远只发官方别名，避免客户端解析出的上游名在代理侧被兜底换掉。
-+OFFICIAL_OPUS="claude-opus-4-8"
-+OFFICIAL_SONNET="claude-sonnet-4-6"
-+OFFICIAL_HAIKU="claude-haiku-4-5"
-+OFFICIAL_FABLE="claude-fable-5"
-+
-+append_tier() {
-+  local tier="$1" official="$2" mapped="${3:-}"
-+  local key upper
-+  upper=$(printf "%s" "$tier" | tr 'a-z' 'A-Z')
-+  local name="${mapped:-$official}"
-+  printf ',\n    "ANTHROPIC_DEFAULT_%s_MODEL": "%s"' "$upper" "$(json_escape "$official")"
-+  printf ',\n    "ANTHROPIC_DEFAULT_%s_MODEL_NAME": "%s"' "$upper" "$(json_escape "$name")"
-+}
-+
-+PROXY_BASE_URL="http://127.0.0.1:15721"
-+PROXY_AUTH_TOKEN="PROXY_MANAGED"
-+
-+# 生成 per-provider 配置目录（CLAUDE_CONFIG_DIR 重定位）：
-+#   ~/.cc-switch/claude-home/<供应商>/settings.json 是 claude 的「用户级」settings——
-+#   与 ~/.claude/settings.json 同待遇、热加载，app 改映射后即时刷新 /model。
-+# 内容 = 用户真实 settings.json（保留 statusLine/permissions 等）+ env 整体覆盖
-+# （接管 BASE_URL/AUTH_TOKEN + x-ccs-provider 头 + 四档位别名/映射名）。
-+# 共享子项软链回主 ~/.claude（会话/历史/技能/插件跨供应商共用）。
++# 准备 per-provider 配置目录（CLAUDE_CONFIG_DIR 重定位）。settings.json 由
++# CC Switch Router 写入与维护（app 启动同步 + 供应商增删改重生成，含插件启用
++# 状态并集），ccs 不写配置文件，只做目录脚手架：共享子项软链回主 ~/.claude
++# （会话/历史/技能/插件跨供应商共用）+ onboarding 种子。
 +safe_name() {
 +  local safe
 +  safe=$(printf "%s" "$1" | LC_ALL=C tr -cs 'A-Za-z0-9._-' '_' | sed 's/^_\+//;s/_\+$//')
@@ -98,83 +72,6 @@ index 0000000..1778457
 +    cp "${HOME}/.claude.json" "$home/.claude.json" 2>/dev/null
 +  fi
 +
-+  local tmp="${home}/settings.json.tmp.$$"
-+  if command -v python3 >/dev/null 2>&1; then
-+    python3 - "${HOME}" "$provider" \
-+      "$OFFICIAL_OPUS" "$OFFICIAL_SONNET" "$OFFICIAL_HAIKU" "$OFFICIAL_FABLE" \
-+      "${PROVIDER_DEFAULT_OPUS_MODEL:-}" "${PROVIDER_DEFAULT_SONNET_MODEL:-}" \
-+      "${PROVIDER_DEFAULT_HAIKU_MODEL:-}" "${PROVIDER_DEFAULT_FABLE_MODEL:-}" \
-+      "$home/settings.json" \
-+      > "$tmp" <<'PY'
-+import json, os, sys
-+home, provider = sys.argv[1], sys.argv[2]
-+tiers = ("opus", "sonnet", "haiku", "fable")
-+officials = tiers
-+mapped = dict(zip(tiers, sys.argv[7:11]))
-+officials = dict(zip(tiers, sys.argv[3:7]))
-+base = {}
-+base_path = os.path.join(home, ".claude", "settings.json")
-+if os.path.isfile(base_path):
-+    try:
-+        base = json.load(open(base_path))
-+    except Exception:
-+        base = {}
-+if not isinstance(base, dict):
-+    base = {}
-+env = {
-+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:15721",
-+    "ANTHROPIC_AUTH_TOKEN": "PROXY_MANAGED",
-+    "ANTHROPIC_CUSTOM_HEADERS": f"x-ccs-provider: {provider}",
-+}
-+for tier in tiers:
-+    key = "ANTHROPIC_DEFAULT_" + tier.upper() + "_MODEL"
-+    env[key] = officials[tier]
-+    env[key + "_NAME"] = mapped.get(tier) or officials[tier]
-+# 插件启用状态并集：会话里 /plugin 的开关写进的是本配置目录的 settings.json，
-+# 只按全局快照重建会清掉它们（表现为插件被禁用）。enabledPlugins true 优先
-+# （不主动禁用用户的插件）；extraKnownMarketplaces 补缺；仅存在于既有文件的
-+# 非 env 键也保留（如会话内保存的 model 默认值）。
-+existing_path = sys.argv[11] if len(sys.argv) > 11 else ""
-+existing = {}
-+if existing_path and os.path.isfile(existing_path):
-+    try:
-+        existing = json.load(open(existing_path))
-+    except Exception:
-+        existing = {}
-+if isinstance(existing, dict):
-+    plugins = base.get("enabledPlugins") if isinstance(base.get("enabledPlugins"), dict) else {}
-+    ex_plugins = existing.get("enabledPlugins") if isinstance(existing.get("enabledPlugins"), dict) else {}
-+    for k, v in ex_plugins.items():
-+        plugins[k] = True if v else plugins.get(k, v)
-+    if plugins:
-+        base["enabledPlugins"] = plugins
-+    markets = base.get("extraKnownMarketplaces") if isinstance(base.get("extraKnownMarketplaces"), dict) else {}
-+    ex_markets = existing.get("extraKnownMarketplaces") if isinstance(existing.get("extraKnownMarketplaces"), dict) else {}
-+    for k, v in ex_markets.items():
-+        markets.setdefault(k, v)
-+    if markets:
-+        base["extraKnownMarketplaces"] = markets
-+    for k, v in existing.items():
-+        if k != "env" and k not in base:
-+            base[k] = v
-+base["env"] = env
-+sys.stdout.write(json.dumps(base, indent=2, ensure_ascii=False) + "\n")
-+PY
-+  else
-+    # 无 python3：退化为纯 provider env（丢失用户级 statusLine 等非 env 设置）
-+    {
-+      printf '{\n  "env": {\n'
-+      printf '    "ANTHROPIC_BASE_URL": "%s",\n' "$PROXY_BASE_URL"
-+      printf '    "ANTHROPIC_AUTH_TOKEN": "%s",\n' "$PROXY_AUTH_TOKEN"
-+      printf '    "ANTHROPIC_CUSTOM_HEADERS": "x-ccs-provider: %s"' "$(json_escape "$provider")"
-+      append_tier opus   "$OFFICIAL_OPUS"   "${PROVIDER_DEFAULT_OPUS_MODEL:-}"
-+      append_tier sonnet "$OFFICIAL_SONNET" "${PROVIDER_DEFAULT_SONNET_MODEL:-}"
-+      append_tier haiku  "$OFFICIAL_HAIKU"  "${PROVIDER_DEFAULT_HAIKU_MODEL:-}"
-+      append_tier fable  "$OFFICIAL_FABLE"  "${PROVIDER_DEFAULT_FABLE_MODEL:-}"
-+      printf '\n  }\n}\n'
-+    } > "$tmp"
-+  fi
-+  mv "$tmp" "$home/settings.json"
 +  printf "%s" "$home"
 +}
 +
@@ -299,15 +196,6 @@ index 0000000..1778457
 +  exit 1
 +fi
 +
-+if [ "$DB_CHECK_OK" = "1" ]; then
-+  # 只取四个档位的映射值（_MODEL_NAME 由 ccs 生成，不读供应商的 _NAME/ANTHROPIC_MODEL）
-+  for TIER in OPUS SONNET HAIKU FABLE; do
-+    VAR="PROVIDER_DEFAULT_${TIER}_MODEL"
-+    VAL=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
-+      "SELECT json_extract(settings_config,'\$.env.ANTHROPIC_DEFAULT_${TIER}_MODEL') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
-+    eval "$VAR=\$VAL"
-+  done
-+fi
 +
 +MODE_TAG=""
 +[ "$ISOLATE" = "1" ] && MODE_TAG=" (isolated)" || true
@@ -316,8 +204,15 @@ index 0000000..1778457
 +
 +SAFE_NAME=$(safe_name "${FULL_NAME}")
 +CONFIG_HOME=$(setup_provider_config_home "${FULL_NAME}" "${SAFE_NAME}")
-+# 配置目录内的 settings.json 由 app 在供应商配置变化时自动重生成，
-+# claude 热加载后 /model 实时反映最新映射（无需重启）
++# settings.json 由 CC Switch Router 负责写入（启动同步 + 供应商增删改重生成），
++# ccs 不写配置文件。缺失 = app 尚未同步（或目录被手删），拒绝启动以免产生
++# 无 BASE_URL 的裸会话
++if [ ! -f "${CONFIG_HOME}/settings.json" ]; then
++  echo "ccs: missing settings.json in ${CONFIG_HOME}" >&2
++  echo "ccs: restart CC Switch Router so it rewrites provider config files, then retry" >&2
++  exit 1
++fi
++# claude 对 settings 热加载：app 改映射后 /model 实时反映最新映射（无需重启）
 +echo "ccs: config home ${CONFIG_HOME}" >&2
 +
 +# Route through the local proxy: inject x-ccs-provider header (canonical name)
