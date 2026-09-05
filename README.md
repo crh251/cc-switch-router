@@ -14,12 +14,15 @@
 
 workflow 流程：下载所选版本的上游源码 tarball → `git apply patches/<所选版本>.patch` → `pnpm tauri build --target aarch64-apple-darwin` → `hdiutil` 打包 DMG → 发布到本仓库 Release。
 
-补丁的四处修改：
+补丁的七处修改：
 
 1. `provider_router.rs`：新增 `select_provider_by_override()` —— 按请求头指定的名字/ID 显式选择供应商
 2. `handler_context.rs`：读 `x-ccs-provider` 请求头，命中则该请求固定路由到指定供应商（跳过全局"当前供应商"与故障转移），未命中回退；新增 Auto Mode 安全分类器审查官方直连旁路拦截
 3. `safety_bypass.rs`：新增安全分类器审查识别与 macOS Keychain（`Claude Code-credentials`）官方 Token 读取与 5 分钟缓存
 4. `tauri.conf.json`：`createUpdaterArtifacts: false` + 删除 `plugins.updater`（自编译无需签名 key；防止官方更新覆盖补丁版）
+5. 错误请求行也按「实际发出的请求」归因模型映射：`forwarder.rs` 新增 `AttemptContext{outbound_model,url}`，`forward()` 出站前写入实际模型与目标 URL 并随 `ForwardError` 带回（重试/整流/故障转移各路径接线）；`handlers.rs` 的 `log_forward_error()` 改吃 `&ForwardError`，用 `err.ctx.outbound_model` 归因（请求未发出则回退、不显示映射），`usage/logger.rs` 的 `log_error_with_context()` 接受独立的 `request_model`——统计页非 2xx 的行同样显示 `请求模型 → 实际出站模型`
+6. 统计表显示报错原因与目标 URL：`error_mapper.rs` 新增 `extract_upstream_error_reason()`/`get_log_error_message()`，从上游错误响应体提取可读原因（`error.message`/`message`/`base_resp.status_msg`，JSON 解析失败回退原文截断 500 字，取不到只记状态码；客户端可见的错误响应行为不变），URL 由 `log_forward_error()` 以 `（https://…）` 追加；前端 `RequestLogTable.tsx` 在状态码下方第二行显示原因，悬浮看全文，无原因不显示
+7. `/model` 实时显示映射：`ccs_router.rs` 新增 `regenerate_claude_settings_files()`，在供应商增删改及启动时自动重生成 `~/.cc-switch/claude-settings/<供应商>.json`（`_MODEL`=官方档位别名、`_MODEL_NAME`=映射名，与 ccs 脚本生成格式一致；claude 对 settings 文件热加载）——ccs（默认继承模式）终端里改映射后 `/model` 实时刷新，选中即发送官方别名、由代理按关键词实时路由，全程无需重启
 
 每个版本的补丁都是对**该版本源码**生成的标准 diff，因此旧版本随时可以重新构建，永远能干净套用。
 

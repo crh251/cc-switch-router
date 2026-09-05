@@ -1,9 +1,9 @@
 diff --git a/src-tauri/resources/ccs b/src-tauri/resources/ccs
 new file mode 100644
-index 0000000..8a1d4ba
+index 0000000..8f63ae3
 --- /dev/null
 +++ b/src-tauri/resources/ccs
-@@ -0,0 +1,182 @@
+@@ -0,0 +1,187 @@
 +#!/usr/bin/env bash
 +# ccs — Claude Code per-terminal provider switching
 +# (requires the patched CC Switch Router running with routing takeover enabled)
@@ -27,16 +27,36 @@ index 0000000..8a1d4ba
 +SETTINGS_DIR="${HOME}/.cc-switch/claude-settings"
 +mkdir -p "${SETTINGS_DIR}"
 +
++# 脚本版本（改动即更新，启动时打印用于确认终端里跑的是哪一版）
++CCS_VERSION="2026.09.05-r4"
++# 默认继承用户级 ~/.claude/settings.json（不传 --setting-sources ""）：
++# /model 才能显示 Custom 模型条目（隔离模式只会渲染官方目录）。
++# 映射显示优先取 ccs 生成的 per-provider 文件（本终端钉住的供应商），
++# 缺失的键回落到用户级文件；claude 对 settings 文件热加载，
++# cc-switch 改映射后 app 会自动重生成这些文件（补丁 v3.20.1-r3+）。
++# CCS_ISOLATE=1 恢复完全隔离模式（不继承用户级配置，/model 无 Custom 条目）。
++ISOLATE="${CCS_ISOLATE:-0}"
++
 +json_escape() {
 +  printf "%s" "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 +}
 +
-+append_env_if_set() {
-+  local key="$1"
-+  local value="$2"
-+  if [ -n "$value" ]; then
-+    printf ',\n    "%s": "%s"' "$key" "$(json_escape "$value")"
-+  fi
++# 与 cc-switch 路由接管写 ~/.claude/settings.json 的模式保持一致：
++#   _MODEL      = 官方档位别名 id（客户端实际发送，代理按档位关键词实时映射）
++#   _MODEL_NAME = 映射后的上游名（仅 /model 展示用，settings 文件热加载后即时刷新）
++# 客户端永远只发官方别名，避免客户端解析出的上游名在代理侧被兜底换掉。
++OFFICIAL_OPUS="claude-opus-4-8"
++OFFICIAL_SONNET="claude-sonnet-4-6"
++OFFICIAL_HAIKU="claude-haiku-4-5"
++OFFICIAL_FABLE="claude-fable-5"
++
++append_tier() {
++  local tier="$1" official="$2" mapped="${3:-}"
++  local key upper
++  upper=$(printf "%s" "$tier" | tr 'a-z' 'A-Z')
++  local name="${mapped:-$official}"
++  printf ',\n    "ANTHROPIC_DEFAULT_%s_MODEL": "%s"' "$upper" "$(json_escape "$official")"
++  printf ',\n    "ANTHROPIC_DEFAULT_%s_MODEL_NAME": "%s"' "$upper" "$(json_escape "$name")"
 +}
 +
 +make_settings_file() {
@@ -52,18 +72,10 @@ index 0000000..8a1d4ba
 +    printf '  "env": {\n'
 +    printf '    "ANTHROPIC_CUSTOM_HEADERS": "x-ccs-provider: %s"' "$(json_escape "$provider")"
 +
-+    append_env_if_set "ANTHROPIC_MODEL" "${PROVIDER_MODEL:-}"
-+    append_env_if_set "ANTHROPIC_DEFAULT_MODEL" "${PROVIDER_DEFAULT_MODEL:-}"
-+    append_env_if_set "ANTHROPIC_DEFAULT_MODEL_NAME" "${PROVIDER_DEFAULT_MODEL_NAME:-}"
-+    append_env_if_set "ANTHROPIC_DEFAULT_OPUS_MODEL" "${PROVIDER_DEFAULT_OPUS_MODEL:-}"
-+    append_env_if_set "ANTHROPIC_DEFAULT_FABLE_MODEL" "${PROVIDER_DEFAULT_FABLE_MODEL:-}"
-+    append_env_if_set "ANTHROPIC_DEFAULT_SONNET_MODEL" "${PROVIDER_DEFAULT_SONNET_MODEL:-}"
-+    append_env_if_set "ANTHROPIC_DEFAULT_HAIKU_MODEL" "${PROVIDER_DEFAULT_HAIKU_MODEL:-}"
-+    append_env_if_set "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME" "${PROVIDER_DEFAULT_OPUS_MODEL_NAME:-}"
-+    append_env_if_set "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME" "${PROVIDER_DEFAULT_FABLE_MODEL_NAME:-}"
-+    append_env_if_set "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME" "${PROVIDER_DEFAULT_SONNET_MODEL_NAME:-}"
-+    append_env_if_set "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME" "${PROVIDER_DEFAULT_HAIKU_MODEL_NAME:-}"
-+    append_env_if_set "ANTHROPIC_SMALL_FAST_MODEL" "${PROVIDER_SMALL_FAST_MODEL:-}"
++    append_tier opus   "$OFFICIAL_OPUS"   "${PROVIDER_DEFAULT_OPUS_MODEL:-}"
++    append_tier sonnet "$OFFICIAL_SONNET" "${PROVIDER_DEFAULT_SONNET_MODEL:-}"
++    append_tier haiku  "$OFFICIAL_HAIKU"  "${PROVIDER_DEFAULT_HAIKU_MODEL:-}"
++    append_tier fable  "$OFFICIAL_FABLE"  "${PROVIDER_DEFAULT_FABLE_MODEL:-}"
 +
 +    printf '\n  }\n'
 +    printf '}\n'
@@ -153,55 +165,66 @@ index 0000000..8a1d4ba
 +fi
 +
 +if [ "$DB_CHECK_OK" = "1" ]; then
-+  PROVIDER_MODEL=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
-+    "SELECT json_extract(settings_config,'$.env.ANTHROPIC_MODEL') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
-+  PROVIDER_DEFAULT_MODEL=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
-+    "SELECT json_extract(settings_config,'$.env.ANTHROPIC_DEFAULT_MODEL') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
-+  PROVIDER_DEFAULT_MODEL_NAME=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
-+    "SELECT json_extract(settings_config,'$.env.ANTHROPIC_DEFAULT_MODEL_NAME') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
-+  PROVIDER_DEFAULT_OPUS_MODEL=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
-+    "SELECT json_extract(settings_config,'$.env.ANTHROPIC_DEFAULT_OPUS_MODEL') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
-+  PROVIDER_DEFAULT_FABLE_MODEL=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
-+    "SELECT json_extract(settings_config,'$.env.ANTHROPIC_DEFAULT_FABLE_MODEL') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
-+  PROVIDER_DEFAULT_SONNET_MODEL=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
-+    "SELECT json_extract(settings_config,'$.env.ANTHROPIC_DEFAULT_SONNET_MODEL') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
-+  PROVIDER_DEFAULT_HAIKU_MODEL=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
-+    "SELECT json_extract(settings_config,'$.env.ANTHROPIC_DEFAULT_HAIKU_MODEL') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
-+  PROVIDER_DEFAULT_OPUS_MODEL_NAME=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
-+    "SELECT json_extract(settings_config,'$.env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
-+  PROVIDER_DEFAULT_FABLE_MODEL_NAME=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
-+    "SELECT json_extract(settings_config,'$.env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
-+  PROVIDER_DEFAULT_SONNET_MODEL_NAME=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
-+    "SELECT json_extract(settings_config,'$.env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
-+  PROVIDER_DEFAULT_HAIKU_MODEL_NAME=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
-+    "SELECT json_extract(settings_config,'$.env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
-+  PROVIDER_SMALL_FAST_MODEL=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
-+    "SELECT json_extract(settings_config,'$.env.ANTHROPIC_SMALL_FAST_MODEL') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
++  # 只取四个档位的映射值（_MODEL_NAME 由 ccs 生成，不读供应商的 _NAME/ANTHROPIC_MODEL）
++  for TIER in OPUS SONNET HAIKU FABLE; do
++    VAR="PROVIDER_DEFAULT_${TIER}_MODEL"
++    VAL=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
++      "SELECT json_extract(settings_config,'\$.env.ANTHROPIC_DEFAULT_${TIER}_MODEL') FROM providers WHERE app_type='claude' AND name = '$FULL_NAME' COLLATE NOCASE LIMIT 1" 2>/dev/null || true)
++    eval "$VAR=\$VAL"
++  done
 +fi
 +
-+echo "ccs: provider \"${FULL_NAME}\"" >&2
++MODE_TAG=""
++[ "$ISOLATE" = "1" ] && MODE_TAG=" (isolated)" || true
++echo "ccs: v${CCS_VERSION} provider \"${FULL_NAME}\"${MODE_TAG}" >&2
 +sleep 1
 +
 +SETTINGS_FILE=$(make_settings_file "${FULL_NAME}")
++# 打印生成的 settings 文件路径：app 会在供应商配置变化时自动重生成它，
++# claude 热加载后 /model 实时反映最新映射
++echo "ccs: settings file ${SETTINGS_FILE}" >&2
 +
 +# Route through the local proxy: inject x-ccs-provider header (canonical name)
-+exec claude --setting-sources "" --settings "${SETTINGS_FILE}" "$@"
++# bash 3.2 + set -u 下空数组展开必须加 ${arr[@]+...} 保护（见 CLAUDE.md 已知 bug #2）
++if [ "$ISOLATE" = "1" ]; then
++  exec claude --setting-sources "" --settings "${SETTINGS_FILE}" "$@"
++else
++  exec claude --settings "${SETTINGS_FILE}" "$@"
++fi
 diff --git a/src-tauri/src/ccs_router.rs b/src-tauri/src/ccs_router.rs
 new file mode 100644
-index 0000000..9ba56ac
+index 0000000..3914330
 --- /dev/null
 +++ b/src-tauri/src/ccs_router.rs
-@@ -0,0 +1,85 @@
-+//! ccs 脚本安装器：安装到 $HOME/script/bin（用户已加入 PATH）
+@@ -0,0 +1,345 @@
++//! ccs 脚本安装器 + per-provider settings 文件同步
++//!
++//! 脚本安装：安装到 $HOME/script/bin（用户已加入 PATH）
 +//!
 +//! 运行介质判定：尝试 chmod 包内资源——
 +//! - 成功 = 正常磁盘运行 → 建立**软链接**指向包内资源（app 升级自动跟随）
 +//! - 失败 = 只读卷（DMG 直接运行）→ **拷贝完整脚本内容**（755）
 +//! 内容一致则跳过（幂等）。所有失败只记日志，不阻断启动。
++//!
++//! settings 文件同步：ccs 启动 claude 时传入 ~/.cc-switch/claude-settings/<供应商>.json，
++//! claude 对 settings 文件热加载，因此供应商配置（模型映射）在 UI 里变化后由
++//! `regenerate_claude_settings_files` 重生成对应文件，终端里 /model 即时显示最新映射，
++//! 无需重启。文件内容与 ccs 脚本生成的完全一致（_MODEL=官方档位别名，_MODEL_NAME=映射名）。
 +
 +use std::os::unix::fs::PermissionsExt;
 +use std::path::PathBuf;
 +use tauri::Manager;
++
++use crate::database::Database;
++use crate::provider::Provider;
++use crate::store::AppState;
++
++// 官方档位别名 id：与 ccs 脚本顶部常量保持一致。客户端实际发送的是这些
++// 别名，代理按档位关键词实时映射到供应商配置的上游模型。
++const OFFICIAL_OPUS: &str = "claude-opus-4-8";
++const OFFICIAL_SONNET: &str = "claude-sonnet-4-6";
++const OFFICIAL_HAIKU: &str = "claude-haiku-4-5";
++const OFFICIAL_FABLE: &str = "claude-fable-5";
 +
 +pub fn install_on_startup(app: &tauri::AppHandle) {
 +    if !cfg!(unix) {
@@ -277,34 +300,816 @@ index 0000000..9ba56ac
 +        }
 +    }
 +}
++
++/// 启动时同步一次 per-provider settings 文件（修复应用外部的手工漂移）
++pub fn sync_settings_files_on_startup(app: &tauri::AppHandle) {
++    match app.try_state::<AppState>() {
++        Some(state) => regenerate_claude_settings_files(&state.db),
++        None => log::warn!("[ccs] AppState 未就绪，跳过 settings 文件同步"),
++    }
++}
++
++/// 重生成 ccs per-provider settings 文件（~/.cc-switch/claude-settings/<供应商>.json）
++///
++/// 供应商增删改（尤其模型映射变化）后调用；claude 对 settings 文件热加载，
++/// 终端里 /model 的 Custom 条目即时反映最新映射。文件名净化规则与 ccs 脚本
++/// 逐字节一致，避免两侧写出不同文件。
++pub fn regenerate_claude_settings_files(db: &Database) {
++    let dir = crate::config::get_app_config_dir().join("claude-settings");
++    if let Err(e) = std::fs::create_dir_all(&dir) {
++        log::warn!("[ccs] 无法创建 {}: {e}", dir.display());
++        return;
++    }
++    let providers = match db.get_all_providers("claude") {
++        Ok(providers) => providers,
++        Err(e) => {
++            log::warn!("[ccs] 读取 claude 供应商失败，跳过 settings 文件同步: {e}");
++            return;
++        }
++    };
++
++    let mut current: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
++    for provider in providers.values() {
++        // 官方供应商不走路由（ccs 同样排除），不生成
++        if provider.name == "Claude Official" {
++            continue;
++        }
++        let file_name = format!("{}.json", safe_file_name(&provider.name));
++        current.insert(file_name.clone());
++        let content = build_settings_json(provider);
++        let path = dir.join(&file_name);
++        // 内容一致则跳过，避免无谓的 mtime 变化触发 claude 重载
++        if std::fs::read_to_string(&path)
++            .map(|existing| existing == content)
++            .unwrap_or(false)
++        {
++            continue;
++        }
++        let tmp = dir.join(format!("{}.tmp.{}", file_name, std::process::id()));
++        match std::fs::write(&tmp, &content).and_then(|()| std::fs::rename(&tmp, &path)) {
++            Ok(()) => log::info!("[ccs] settings 文件已更新: {}", path.display()),
++            Err(e) => log::warn!("[ccs] 写入失败 {}: {e}", path.display()),
++        }
++    }
++
++    // 清理已删除/改名供应商的遗留文件（official.json 由 ccs 官方模式使用，不动）
++    let Ok(entries) = std::fs::read_dir(&dir) else {
++        return;
++    };
++    for entry in entries.flatten() {
++        let path = entry.path();
++        if path.extension().and_then(|e| e.to_str()) != Some("json") {
++            continue;
++        }
++        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
++            continue;
++        };
++        if stem == "official" || current.contains(&format!("{stem}.json")) {
++            continue;
++        }
++        match std::fs::remove_file(&path) {
++            Ok(()) => log::info!("[ccs] 清理遗留 settings 文件: {}", path.display()),
++            Err(e) => log::warn!("[ccs] 清理失败 {}: {e}", path.display()),
++        }
++    }
++}
++
++/// 与 ccs 脚本一致的文件名净化：逐字节替换（非 [A-Za-z0-9._-] → '_'）后去首尾 '_'，
++/// 全部被替换时回退 "provider"。必须按字节处理，多字节字符才会和 bash 的 tr 一致。
++fn safe_file_name(name: &str) -> String {
++    let mapped: String = name
++        .bytes()
++        .map(|b| {
++            if b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-') {
++                b as char
++            } else {
++                '_'
++            }
++        })
++        .collect();
++    let trimmed = mapped.trim_matches('_');
++    if trimmed.is_empty() {
++        "provider".to_string()
++    } else {
++        trimmed.to_string()
++    }
++}
++
++fn build_settings_json(provider: &Provider) -> String {
++    let env = provider.settings_config.get("env");
++    let tier = |key: &str, official: &str| -> (String, String) {
++        let mapped = env
++            .and_then(|e| e.get(key))
++            .and_then(|v| v.as_str())
++            .map(str::trim)
++            .filter(|s| !s.is_empty())
++            .unwrap_or(official);
++        (official.to_string(), mapped.to_string())
++    };
++    let (opus_model, opus_name) = tier("ANTHROPIC_DEFAULT_OPUS_MODEL", OFFICIAL_OPUS);
++    let (sonnet_model, sonnet_name) = tier("ANTHROPIC_DEFAULT_SONNET_MODEL", OFFICIAL_SONNET);
++    let (haiku_model, haiku_name) = tier("ANTHROPIC_DEFAULT_HAIKU_MODEL", OFFICIAL_HAIKU);
++    let (fable_model, fable_name) = tier("ANTHROPIC_DEFAULT_FABLE_MODEL", OFFICIAL_FABLE);
++
++    let body = serde_json::json!({
++        "env": {
++            "ANTHROPIC_CUSTOM_HEADERS": format!("x-ccs-provider: {}", provider.name),
++            "ANTHROPIC_DEFAULT_OPUS_MODEL": opus_model,
++            "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME": opus_name,
++            "ANTHROPIC_DEFAULT_SONNET_MODEL": sonnet_model,
++            "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME": sonnet_name,
++            "ANTHROPIC_DEFAULT_HAIKU_MODEL": haiku_model,
++            "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME": haiku_name,
++            "ANTHROPIC_DEFAULT_FABLE_MODEL": fable_model,
++            "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME": fable_name,
++        }
++    });
++    let mut out = serde_json::to_string_pretty(&body).unwrap_or_else(|_| "{}".to_string());
++    out.push('\n');
++    out
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::database::Database;
++    use serde_json::json;
++    use serial_test::serial;
++    use std::env;
++    use std::sync::Arc;
++    use tempfile::TempDir;
++
++    /// 与 provider_router::tests::TempHome 相同的模式：重定向 HOME，
++    /// 让 get_app_config_dir() 落到临时目录；Drop 时还原环境变量。
++    struct TempHome {
++        dir: TempDir,
++        original_test_home: Option<String>,
++    }
++
++    impl TempHome {
++        fn new() -> Self {
++            let dir = TempDir::new().expect("failed to create temp home");
++            let original_test_home = env::var("CC_SWITCH_TEST_HOME").ok();
++            env::set_var("CC_SWITCH_TEST_HOME", dir.path());
++            Self {
++                dir,
++                original_test_home,
++            }
++        }
++
++        fn settings_dir(&self) -> PathBuf {
++            self.dir.path().join(".cc-switch").join("claude-settings")
++        }
++    }
++
++    impl Drop for TempHome {
++        fn drop(&mut self) {
++            match &self.original_test_home {
++                Some(value) => env::set_var("CC_SWITCH_TEST_HOME", value),
++                None => env::remove_var("CC_SWITCH_TEST_HOME"),
++            }
++        }
++    }
++
++    fn make_provider(id: &str, name: &str, opus_mapping: &str) -> Provider {
++        let mut provider = Provider::with_id(id.to_string(), name.to_string(), json!({}), None);
++        provider.settings_config["env"] = json!({
++            "ANTHROPIC_DEFAULT_OPUS_MODEL": opus_mapping,
++        });
++        provider
++    }
++
++    #[test]
++    #[serial]
++    fn test_regenerate_creates_files_with_mapping() {
++        let home = TempHome::new();
++        let db = Arc::new(Database::memory().unwrap());
++        db.save_provider(
++            "claude",
++            &make_provider("a", "senseaudio", "deepseek-v4-pro"),
++        )
++        .unwrap();
++        db.save_provider("claude", &make_provider("b", "sensenova", "kimi-k3"))
++            .unwrap();
++        db.save_provider(
++            "claude",
++            &Provider::with_id(
++                "official".to_string(),
++                "Claude Official".to_string(),
++                json!({}),
++                None,
++            ),
++        )
++        .unwrap();
++
++        regenerate_claude_settings_files(&db);
++
++        let file = home.settings_dir().join("senseaudio.json");
++        let content = std::fs::read_to_string(&file).expect("senseaudio.json should exist");
++        assert!(content.contains("x-ccs-provider: senseaudio"));
++        assert!(content.contains("ANTHROPIC_DEFAULT_OPUS_MODEL_NAME\": \"deepseek-v4-pro"));
++        // 未映射的档位回落官方别名
++        assert!(content.contains("ANTHROPIC_DEFAULT_SONNET_MODEL_NAME\": \"claude-sonnet-4-6"));
++        // 官方供应商不生成
++        assert!(!home.settings_dir().join("Claude Official.json").exists());
++        assert!(home.settings_dir().join("sensenova.json").exists());
++    }
++
++    #[test]
++    #[serial]
++    fn test_regenerate_is_idempotent_and_cleans_stale_files() {
++        let home = TempHome::new();
++        let db = Arc::new(Database::memory().unwrap());
++        db.save_provider(
++            "claude",
++            &make_provider("a", "senseaudio", "deepseek-v4-pro"),
++        )
++        .unwrap();
++        regenerate_claude_settings_files(&db);
++        let file = home.settings_dir().join("senseaudio.json");
++        let first = std::fs::read_to_string(&file).unwrap();
++
++        // 内容未变：幂等跳过（mtime 不变）
++        let mtime_1 = std::fs::metadata(&file).unwrap().modified().unwrap();
++        regenerate_claude_settings_files(&db);
++        let mtime_2 = std::fs::metadata(&file).unwrap().modified().unwrap();
++        assert_eq!(mtime_1, mtime_2);
++        assert_eq!(first, std::fs::read_to_string(&file).unwrap());
++
++        // 供应商被删除：遗留文件清理
++        db.delete_provider("claude", "a").unwrap();
++        regenerate_claude_settings_files(&db);
++        assert!(!file.exists());
++    }
++}
+diff --git a/src-tauri/src/commands/provider.rs b/src-tauri/src/commands/provider.rs
+index a099c4a..a6b8e23 100644
+--- a/src-tauri/src/commands/provider.rs
++++ b/src-tauri/src/commands/provider.rs
+@@ -48,8 +48,12 @@ pub async fn add_provider(
+         let state = app_handle
+             .try_state::<AppState>()
+             .ok_or_else(|| "应用状态不可用".to_string())?;
+-        ProviderService::add(state.inner(), app_type, provider, add_to_live)
+-            .map_err(|e| e.to_string())
++        let result = ProviderService::add(state.inner(), app_type, provider, add_to_live)
++            .map_err(|e| e.to_string());
++        if result.is_ok() {
++            crate::ccs_router::regenerate_claude_settings_files(&state.inner().db);
++        }
++        result
+     })
+     .await
+     .map_err(|e| format!("供应商添加任务执行失败: {e}"))?
+@@ -67,8 +71,13 @@ pub async fn update_provider(
+         let state = app_handle
+             .try_state::<AppState>()
+             .ok_or_else(|| "应用状态不可用".to_string())?;
+-        ProviderService::update(state.inner(), app_type, originalId.as_deref(), provider)
+-            .map_err(|e| e.to_string())
++        let result =
++            ProviderService::update(state.inner(), app_type, originalId.as_deref(), provider)
++                .map_err(|e| e.to_string());
++        if result.is_ok() {
++            crate::ccs_router::regenerate_claude_settings_files(&state.inner().db);
++        }
++        result
+     })
+     .await
+     .map_err(|e| format!("供应商更新任务执行失败: {e}"))?
+@@ -81,9 +90,13 @@ pub fn delete_provider(
+     id: String,
+ ) -> Result<bool, String> {
+     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+-    ProviderService::delete(state.inner(), app_type, &id)
++    let result = ProviderService::delete(state.inner(), app_type, &id)
+         .map(|_| true)
+-        .map_err(|e| e.to_string())
++        .map_err(|e| e.to_string());
++    if result.is_ok() {
++        crate::ccs_router::regenerate_claude_settings_files(&state.db);
++    }
++    result
+ }
+ 
+ #[tauri::command]
 diff --git a/src-tauri/src/lib.rs b/src-tauri/src/lib.rs
-index 36b76cb..009ee64 100644
+index 36b76cb..11ce728 100644
 --- a/src-tauri/src/lib.rs
 +++ b/src-tauri/src/lib.rs
-@@ -7,6 +7,8 @@ mod claude_plugin;
- mod codex_config;
- mod codex_history_migration;
- mod codex_state_db;
+@@ -1,6 +1,7 @@
+ mod app_config;
+ mod app_store;
+ mod auto_launch;
 +mod ccs_router;
+ mod claude_desktop_config;
+ mod claude_mcp;
+ mod claude_plugin;
+@@ -30,6 +31,7 @@ mod prompt;
+ mod prompt_files;
+ mod provider;
+ mod proxy;
 +mod safety_bypass;
- mod commands;
- mod config;
- mod database;
-@@ -499,6 +501,9 @@ pub fn run() {
+ mod services;
+ mod session_manager;
+ mod settings;
+@@ -499,6 +501,13 @@ pub fn run() {
              // 让 Store 损坏或路径无效等启动警告能够真正落盘。
              let _ = app_store::refresh_app_config_dir_override(app.handle());
  
 +            // ccs：把随包的 ccs 脚本软链接到 PATH 目录（幂等，失败仅告警不阻断启动）
 +            ccs_router::install_on_startup(app.handle());
 +
++            // ccs：启动时同步一次 per-provider settings 文件（模型映射变化由
++            // add/update/delete_provider 命令触发生成，这里兜底修复外部漂移）
++            ccs_router::sync_settings_files_on_startup(app.handle());
++
              #[cfg(target_os = "windows")]
              set_windows_app_user_model_id(app.handle());
  
+diff --git a/src-tauri/src/proxy/error_mapper.rs b/src-tauri/src/proxy/error_mapper.rs
+index 777472e..ba098f4 100644
+--- a/src-tauri/src/proxy/error_mapper.rs
++++ b/src-tauri/src/proxy/error_mapper.rs
+@@ -86,6 +86,77 @@ pub fn get_error_message(error: &ProxyError) -> String {
+     }
+ }
+ 
++/// 从上游错误响应体中提取可读的报错原因
++///
++/// 优先取常见错误信封的 message 字段（Anthropic/OpenAI/Gemini 的
++/// `error.message`、顶层 `message`、MiniMax 的 `base_resp.status_msg`），
++/// JSON 解析失败时回退原文（截断）。返回 None 表示响应体里没有可读原因。
++pub fn extract_upstream_error_reason(body: Option<&str>) -> Option<String> {
++    const MAX_REASON_CHARS: usize = 500;
++
++    fn compact(reason: String) -> Option<String> {
++        let reason = reason.split_whitespace().collect::<Vec<_>>().join(" ");
++        if reason.is_empty() {
++            return None;
++        }
++        if reason.chars().count() > MAX_REASON_CHARS {
++            let truncated: String = reason.chars().take(MAX_REASON_CHARS).collect();
++            Some(format!("{truncated}…"))
++        } else {
++            Some(reason)
++        }
++    }
++
++    let body = body?.trim();
++    if body.is_empty() {
++        return None;
++    }
++
++    if let Ok(value) = serde_json::from_str::<serde_json::Value>(body) {
++        let from_value = |v: &serde_json::Value| -> Option<String> {
++            v.as_str()
++                .map(ToString::to_string)
++                .filter(|s| !s.trim().is_empty())
++        };
++        let reason = value
++            .get("error")
++            .and_then(|err| {
++                // message 缺失时回退整个 error 值（部分网关是 "error": "字符串" 形式）
++                err.get("message")
++                    .and_then(from_value)
++                    .or_else(|| from_value(err))
++            })
++            .or_else(|| from_value(value.get("message")?))
++            .or_else(|| {
++                value
++                    .get("base_resp")?
++                    .get("status_msg")
++                    .and_then(from_value)
++            });
++        // JSON 信封里没取到 message 时不再回退整段 JSON（对用户是噪音）
++        return reason.and_then(compact);
++    }
++
++    compact(body.to_string())
++}
++
++/// 请求日志专用的简明错误信息
++///
++/// 上游错误时从响应体提取可读原因（避免整段原始报文进库），其余错误
++/// 沿用 `get_error_message`。客户端可见的错误响应仍走 `get_error_message`，
++/// 行为不变。
++pub fn get_log_error_message(error: &ProxyError) -> String {
++    match error {
++        ProxyError::UpstreamError { status, body } => {
++            match extract_upstream_error_reason(body.as_deref()) {
++                Some(reason) => format!("上游错误 ({status}): {reason}"),
++                None => format!("上游错误 ({status})"),
++            }
++        }
++        other => get_error_message(other),
++    }
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+@@ -152,4 +223,84 @@ mod tests {
+         assert!(msg.contains("500"));
+         assert!(msg.contains("Internal Server Error"));
+     }
++
++    #[test]
++    fn test_extract_reason_anthropic_envelope() {
++        let body = r#"{"type":"error","error":{"type":"rate_limit_error","message":"token plan entitlement exhausted"}}"#;
++        assert_eq!(
++            extract_upstream_error_reason(Some(body)).as_deref(),
++            Some("token plan entitlement exhausted")
++        );
++    }
++
++    #[test]
++    fn test_extract_reason_openai_and_string_error() {
++        let openai = r#"{"error":{"message":"Rate limit reached","type":"requests","code":"429"}}"#;
++        assert_eq!(
++            extract_upstream_error_reason(Some(openai)).as_deref(),
++            Some("Rate limit reached")
++        );
++        let string_error = r#"{"error":"Invalid API key"}"#;
++        assert_eq!(
++            extract_upstream_error_reason(Some(string_error)).as_deref(),
++            Some("Invalid API key")
++        );
++    }
++
++    #[test]
++    fn test_extract_reason_top_level_message_and_minimax() {
++        assert_eq!(
++            extract_upstream_error_reason(Some(r#"{"message":"quota exceeded"}"#)).as_deref(),
++            Some("quota exceeded")
++        );
++        assert_eq!(
++            extract_upstream_error_reason(Some(
++                r#"{"base_resp":{"status_code":2013,"status_msg":"invalid api key"}}"#
++            ))
++            .as_deref(),
++            Some("invalid api key")
++        );
++    }
++
++    #[test]
++    fn test_extract_reason_fallbacks() {
++        // 空/缺失响应体：无原因
++        assert_eq!(extract_upstream_error_reason(None), None);
++        assert_eq!(extract_upstream_error_reason(Some("  ")), None);
++        assert_eq!(
++            extract_upstream_error_reason(Some(r#"{"error":{"code":429}}"#)),
++            None
++        );
++        // 非 JSON（如网关 HTML）：回退原文
++        assert_eq!(
++            extract_upstream_error_reason(Some("<html>502 Bad Gateway</html>")).as_deref(),
++            Some("<html>502 Bad Gateway</html>")
++        );
++    }
++
++    #[test]
++    fn test_get_log_error_message_prefers_reason() {
++        let error = ProxyError::UpstreamError {
++            status: 429,
++            body: Some(
++                r#"{"error":{"type":"rate_limit_error","message":"token plan entitlement exhausted"}}"#
++                    .to_string(),
++            ),
++        };
++        let msg = get_log_error_message(&error);
++        assert_eq!(msg, "上游错误 (429): token plan entitlement exhausted");
++
++        // 响应体没有可读原因时不带冒号后缀
++        let no_reason = ProxyError::UpstreamError {
++            status: 429,
++            body: Some("{}".to_string()),
++        };
++        assert_eq!(get_log_error_message(&no_reason), "上游错误 (429)");
++
++        // 非上游错误沿用 get_error_message
++        assert_eq!(
++            get_log_error_message(&ProxyError::NoAvailableProvider),
++            "无可用 Provider"
++        );
++    }
+ }
+diff --git a/src-tauri/src/proxy/forwarder.rs b/src-tauri/src/proxy/forwarder.rs
+index f782210..cace28e 100644
+--- a/src-tauri/src/proxy/forwarder.rs
++++ b/src-tauri/src/proxy/forwarder.rs
+@@ -115,6 +115,21 @@ pub struct ForwardResult {
+ pub struct ForwardError {
+     pub error: ProxyError,
+     pub provider: Option<Provider>,
++    /// 最后一次尝试实际出站时的上下文（错误日志归因用）。
++    ///
++    /// `forward()` 在真正发起 HTTP 请求前写入；此前的失败（配置/供应商选择/
++    /// 请求体构造）保持默认值，表示「请求未发出」，错误行据此不做模型映射
++    /// 与 URL 归因。
++    pub ctx: AttemptContext,
++}
++
++/// 单次转发尝试实际出站的模型与目标 URL
++#[derive(Clone, Default)]
++pub struct AttemptContext {
++    /// 实际发往上游的模型名（所有映射/改写之后的最终值）
++    pub outbound_model: Option<String>,
++    /// 实际请求的上游 URL
++    pub url: Option<String>,
+ }
+ 
+ /// 活跃连接 RAII guard
+@@ -317,7 +332,7 @@ impl RequestForwarder {
+ 
+     /// 整流（thinking signature 或 budget）重试失败后的统一收尾。
+     ///
+-    /// `None` 表示已记录熔断器、累积 `last_error`/`last_provider`，
++    /// `None` 表示已记录熔断器、累积 `last_error`/`last_provider`/`last_ctx`，
+     /// 调用方应 `continue` 让下一家 provider 继续故障转移；
+     /// `Some(ForwardError)` 表示是客户端错误，没有 provider 能修复，
+     /// 调用方应直接 `return` 把错误返回给客户端。
+@@ -331,6 +346,8 @@ impl RequestForwarder {
+         rectifier_label: &str,
+         last_error: &mut Option<ProxyError>,
+         last_provider: &mut Option<Provider>,
++        last_ctx: &mut AttemptContext,
++        attempt_ctx: &AttemptContext,
+     ) -> Option<ForwardError> {
+         // Provider 错误：本家上游/网络确实出问题，下一家 provider 可能可用 → 继续故障转移。
+         // 客户端错误：整流后请求仍违法，下一家也修不好 → 直接返回。
+@@ -360,6 +377,7 @@ impl RequestForwarder {
+             }
+             *last_error = Some(retry_err);
+             *last_provider = Some(provider.clone());
++            *last_ctx = attempt_ctx.clone();
+             return None;
+         }
+ 
+@@ -376,6 +394,7 @@ impl RequestForwarder {
+         Some(ForwardError {
+             error: retry_err,
+             provider: Some(provider.clone()),
++            ctx: attempt_ctx.clone(),
+         })
+     }
+ 
+@@ -443,6 +462,7 @@ impl RequestForwarder {
+                 app_type.as_str()
+             )),
+             provider: None,
++            ctx: AttemptContext::default(),
+         })?;
+         let app_type_str = app_type.as_str();
+ 
+@@ -450,11 +470,13 @@ impl RequestForwarder {
+             return Err(ForwardError {
+                 error: ProxyError::NoAvailableProvider,
+                 provider: None,
++                ctx: AttemptContext::default(),
+             });
+         }
+ 
+         let mut last_error = None;
+         let mut last_provider = None;
++        let mut last_ctx = AttemptContext::default();
+         let mut attempted_providers = 0usize;
+ 
+         // 单 Provider 场景下跳过熔断器检查（故障转移关闭时）
+@@ -467,6 +489,8 @@ impl RequestForwarder {
+             let mut rectifier_retried = false;
+             let mut budget_rectifier_retried = false;
+             let mut media_rectifier_retried = false;
++            // 本次尝试实际出站的模型/URL：forward() 在真正发请求前写入
++            let mut attempt_ctx = AttemptContext::default();
+ 
+             // 上限检查：尊重用户在 AppProxyConfig.max_retries 上配置的「重试次数」。
+             // 放在熔断器 allow 检查之前，避免在已经超限时还占用 HalfOpen 探测名额。
+@@ -535,6 +559,7 @@ impl RequestForwarder {
+                     &headers,
+                     &extensions,
+                     adapter.as_ref(),
++                    &mut attempt_ctx,
+                 )
+                 .await
+             {
+@@ -634,6 +659,7 @@ impl RequestForwarder {
+                                     &headers,
+                                     &extensions,
+                                     adapter.as_ref(),
++                                    &mut attempt_ctx,
+                                 )
+                                 .await
+                             {
+@@ -706,6 +732,8 @@ impl RequestForwarder {
+                                             "media 降级",
+                                             &mut last_error,
+                                             &mut last_provider,
++                                            &mut last_ctx,
++                                            &attempt_ctx,
+                                         )
+                                         .await
+                                     {
+@@ -745,6 +773,7 @@ impl RequestForwarder {
+                                 return Err(ForwardError {
+                                     error: e,
+                                     provider: Some(provider.clone()),
++                                    ctx: attempt_ctx.clone(),
+                                 });
+                             }
+ 
+@@ -780,6 +809,7 @@ impl RequestForwarder {
+                                         &headers,
+                                         &extensions,
+                                         adapter.as_ref(),
++                                        &mut attempt_ctx,
+                                     )
+                                     .await
+                                 {
+@@ -855,6 +885,8 @@ impl RequestForwarder {
+                                                 "整流",
+                                                 &mut last_error,
+                                                 &mut last_provider,
++                                                &mut last_ctx,
++                                                &attempt_ctx,
+                                             )
+                                             .await
+                                         {
+@@ -897,6 +929,7 @@ impl RequestForwarder {
+                                 return Err(ForwardError {
+                                     error: e,
+                                     provider: Some(provider.clone()),
++                                    ctx: attempt_ctx.clone(),
+                                 });
+                             }
+ 
+@@ -923,6 +956,7 @@ impl RequestForwarder {
+                                 return Err(ForwardError {
+                                     error: e,
+                                     provider: Some(provider.clone()),
++                                    ctx: attempt_ctx.clone(),
+                                 });
+                             }
+ 
+@@ -946,6 +980,7 @@ impl RequestForwarder {
+                                     &headers,
+                                     &extensions,
+                                     adapter.as_ref(),
++                                    &mut attempt_ctx,
+                                 )
+                                 .await
+                             {
+@@ -1015,6 +1050,8 @@ impl RequestForwarder {
+                                             "budget 整流",
+                                             &mut last_error,
+                                             &mut last_provider,
++                                            &mut last_ctx,
++                                            &attempt_ctx,
+                                         )
+                                         .await
+                                     {
+@@ -1045,6 +1082,7 @@ impl RequestForwarder {
+                         return Err(ForwardError {
+                             error: e,
+                             provider: Some(provider.clone()),
++                            ctx: attempt_ctx.clone(),
+                         });
+                     }
+ 
+@@ -1083,6 +1121,7 @@ impl RequestForwarder {
+ 
+                             last_error = Some(e);
+                             last_provider = Some(provider.clone());
++                            last_ctx = attempt_ctx.clone();
+                             // 继续尝试下一个供应商
+                             continue;
+                         }
+@@ -1108,6 +1147,7 @@ impl RequestForwarder {
+                             return Err(ForwardError {
+                                 error: e,
+                                 provider: Some(provider.clone()),
++                                ctx: attempt_ctx.clone(),
+                             });
+                         }
+                     }
+@@ -1129,6 +1169,7 @@ impl RequestForwarder {
+             return Err(ForwardError {
+                 error: ProxyError::NoAvailableProvider,
+                 provider: None,
++                ctx: AttemptContext::default(),
+             });
+         }
+ 
+@@ -1152,6 +1193,7 @@ impl RequestForwarder {
+         Err(ForwardError {
+             error: last_error.unwrap_or(ProxyError::MaxRetriesExceeded),
+             provider: last_provider,
++            ctx: last_ctx,
+         })
+     }
+ 
+@@ -1159,6 +1201,10 @@ impl RequestForwarder {
+     ///
+     /// 成功时返回 `(response, claude_api_format, outbound_model)`，其中
+     /// `outbound_model` 是最终发往上游的模型名（所有映射/改写之后）。
++    ///
++    /// `attempt_ctx` 在真正发起 HTTP 请求前写入实际出站模型与 URL，供调用方
++    /// 在失败时随 `ForwardError` 带给错误日志归因；函数入口重置，此前阶段的
++    /// 失败保持默认值（请求未发出）。
+     #[allow(clippy::too_many_arguments)]
+     async fn forward(
+         &self,
+@@ -1170,7 +1216,10 @@ impl RequestForwarder {
+         headers: &axum::http::HeaderMap,
+         extensions: &Extensions,
+         adapter: &dyn ProviderAdapter,
++        attempt_ctx: &mut AttemptContext,
+     ) -> Result<(ProxyResponse, Option<String>, Option<String>), ProxyError> {
++        // 同一 attempt_ctx 会被整流重试复用：入口先重置，避免带上一次的旧值
++        *attempt_ctx = AttemptContext::default();
+         // 使用适配器提取 base_url
+         let mut base_url = adapter.extract_base_url(provider)?;
+ 
+@@ -2326,6 +2375,15 @@ impl RequestForwarder {
+             is_copilot,
+         );
+ 
++        // 请求体已定稿、即将出站：记录实际模型与目标 URL（错误归因真值）。
++        // 此后的失败（发送/超时/上游非 2xx）都能归因到这里记录的值。
++        // URL 用脱敏后的 target_for_log：该值会进 proxy_request_logs 落盘，
++        // 不能把 query 里的 key / path 里的凭据带进本地数据库。
++        *attempt_ctx = AttemptContext {
++            outbound_model: outbound_model.clone(),
++            url: Some(target_for_log.clone()),
++        };
++
+         // 发送请求
+         let response = if is_socks_proxy || !preserve_exact_header_case {
+             // OpenAI / Copilot / Codex 类后端不依赖原始 header 大小写；走 reqwest
 diff --git a/src-tauri/src/proxy/handler_context.rs b/src-tauri/src/proxy/handler_context.rs
-index 29be37d..a5ab33a 100644
+index 29be37d..19e5815 100644
 --- a/src-tauri/src/proxy/handler_context.rs
 +++ b/src-tauri/src/proxy/handler_context.rs
-@@ -147,6 +147,32 @@ impl RequestContext {
+@@ -131,22 +131,81 @@ impl RequestContext {
+ 
+         // 使用共享的 ProviderRouter 选择 Provider（熔断器状态跨请求保持）
+         // 注意：只在这里调用一次，结果传递给 forwarder，避免重复消耗 HalfOpen 名额
+-        let providers = state
+-            .provider_router
+-            .select_providers(app_type_str)
+-            .await
+-            .map_err(|e| match e {
+-                crate::error::AppError::AllProvidersCircuitOpen => {
+-                    ProxyError::AllProvidersCircuitOpen
++        //
++        // ccs 扩展：请求头 `x-ccs-provider: <供应商名|id>` 显式指定供应商（终端级隔离），
++        // 命中时跳过当前供应商与故障转移；未命中或不带头时走默认选择逻辑。
++        let ccs_provider_override = headers
++            .get("x-ccs-provider")
++            .and_then(|value| value.to_str().ok())
++            .map(str::trim)
++            .filter(|value| !value.is_empty())
++            .map(str::to_string);
++
++        let providers_result = if let Some(override_ref) = ccs_provider_override.as_deref() {
++            match state
++                .provider_router
++                .select_provider_by_override(app_type_str, override_ref)
++                .await
++            {
++                Ok(Some(provider)) => {
++                    log::info!(
++                        "[{}] [ccs] x-ccs-provider 命中: {} ({}), model: {}",
++                        tag,
++                        provider.name,
++                        provider.id,
++                        request_model
++                    );
++                    Ok(vec![provider])
++                }
++                Ok(None) => {
++                    log::warn!(
++                        "[{}] [ccs] x-ccs-provider '{override_ref}' 未匹配任何供应商，回退默认选择",
++                        tag
++                    );
++                    state.provider_router.select_providers(app_type_str).await
+                 }
+-                crate::error::AppError::NoProvidersConfigured => ProxyError::NoProvidersConfigured,
+-                _ => ProxyError::DatabaseError(e.to_string()),
+-            })?;
++                Err(e) => Err(e),
++            }
++        } else {
++            state.provider_router.select_providers(app_type_str).await
++        };
++
++        let providers = providers_result.map_err(|e| match e {
++            crate::error::AppError::AllProvidersCircuitOpen => ProxyError::AllProvidersCircuitOpen,
++            crate::error::AppError::NoProvidersConfigured => ProxyError::NoProvidersConfigured,
++            _ => ProxyError::DatabaseError(e.to_string()),
++        })?;
+ 
+         let provider = providers
              .first()
              .cloned()
              .ok_or(ProxyError::NoAvailableProvider)?;
@@ -337,8 +1142,118 @@ index 29be37d..a5ab33a 100644
  
          log::debug!(
              "[{}] Provider: {}, model: {}, failover chain: {} providers, session: {}",
+diff --git a/src-tauri/src/proxy/handlers.rs b/src-tauri/src/proxy/handlers.rs
+index 0fd6b82..278daf8 100644
+--- a/src-tauri/src/proxy/handlers.rs
++++ b/src-tauri/src/proxy/handlers.rs
+@@ -9,8 +9,8 @@
+ 
+ use super::{
+     content_encoding::{decompress_body, get_content_encoding, is_supported_content_encoding},
+-    error_mapper::{get_error_message, map_proxy_error_to_status},
+-    forwarder::ActiveConnectionGuard,
++    error_mapper::{get_error_message, get_log_error_message, map_proxy_error_to_status},
++    forwarder::{ActiveConnectionGuard, ForwardError},
+     handler_config::{
+         claude_stream_usage_event_filter, codex_stream_usage_event_filter, CLAUDE_PARSER_CONFIG,
+         CODEX_PARSER_CONFIG, GEMINI_PARSER_CONFIG, OPENAI_PARSER_CONFIG,
+@@ -218,7 +218,7 @@ async fn handle_messages_for_app(
+             if let Some(provider) = err.provider.take() {
+                 ctx.provider = provider;
+             }
+-            log_forward_error(&state, &ctx, is_stream, &err.error);
++            log_forward_error(&state, &ctx, is_stream, &err);
+             return Err(err.error);
+         }
+     };
+@@ -803,7 +803,7 @@ pub async fn handle_chat_completions(
+             if let Some(provider) = err.provider.take() {
+                 ctx.provider = provider;
+             }
+-            log_forward_error(&state, &ctx, is_stream, &err.error);
++            log_forward_error(&state, &ctx, is_stream, &err);
+             return build_codex_proxy_error_response(&ctx, &endpoint, &err.error);
+         }
+     };
+@@ -898,7 +898,7 @@ async fn handle_responses_for_app(
+             if let Some(provider) = err.provider.take() {
+                 ctx.provider = provider;
+             }
+-            log_forward_error(&state, &ctx, is_stream, &err.error);
++            log_forward_error(&state, &ctx, is_stream, &err);
+             return build_codex_proxy_error_response(&ctx, &endpoint, &err.error);
+         }
+     };
+@@ -1014,7 +1014,7 @@ pub async fn handle_alpha_search(
+             if let Some(provider) = err.provider.take() {
+                 ctx.provider = provider;
+             }
+-            log_forward_error(&state, &ctx, false, &err.error);
++            log_forward_error(&state, &ctx, false, &err);
+             return build_codex_proxy_error_response(&ctx, &endpoint, &err.error);
+         }
+     };
+@@ -1097,7 +1097,7 @@ async fn handle_responses_compact_for_app(
+             if let Some(provider) = err.provider.take() {
+                 ctx.provider = provider;
+             }
+-            log_forward_error(&state, &ctx, is_stream, &err.error);
++            log_forward_error(&state, &ctx, is_stream, &err);
+             return build_codex_proxy_error_response(&ctx, &endpoint, &err.error);
+         }
+     };
+@@ -2106,7 +2106,7 @@ pub async fn handle_gemini(
+             if let Some(provider) = err.provider.take() {
+                 ctx.provider = provider;
+             }
+-            log_forward_error(&state, &ctx, is_stream, &err.error);
++            log_forward_error(&state, &ctx, is_stream, &err);
+             return Err(err.error);
+         }
+     };
+@@ -2745,19 +2745,37 @@ fn log_forward_error(
+     state: &ProxyState,
+     ctx: &RequestContext,
+     is_streaming: bool,
+-    error: &ProxyError,
++    err: &ForwardError,
+ ) {
+     use super::usage::logger::UsageLogger;
+ 
+     let logger = UsageLogger::new(&state.db);
+-    let status_code = map_proxy_error_to_status(error);
+-    let error_message = get_error_message(error);
++    let status_code = map_proxy_error_to_status(&err.error);
++    let mut error_message = get_log_error_message(&err.error);
++    // 目标 URL：forward() 出站前写入 attempt_ctx 的真值；请求未发出时为空，
++    // 不拼接。
++    if let Some(url) = err.ctx.url.as_deref() {
++        if !url.is_empty() {
++            error_message.push_str(&format!("（{url}）"));
++        }
++    }
+     let request_id = uuid::Uuid::new_v4().to_string();
+ 
++    // 错误行与成功行一样按「实际发出的出站模型」归因：attempt_ctx 由 forward()
++    // 在请求体定稿后写入（映射/改写全部完成后的最终值），随 ForwardError 带回；
++    // 请求未发出（配置/供应商选择失败等）时为空 → 回退客户端请求模型，
++    // model 与 request_model 相同，前端不显示映射箭头。
++    let model = err
++        .ctx
++        .outbound_model
++        .clone()
++        .unwrap_or_else(|| ctx.request_model.clone());
++
+     if let Err(e) = logger.log_error_with_context(
+         request_id,
+         ctx.provider.id.clone(),
+         ctx.app_type_str.to_string(),
++        model,
+         ctx.request_model.clone(),
+         status_code,
+         error_message,
 diff --git a/src-tauri/src/proxy/provider_router.rs b/src-tauri/src/proxy/provider_router.rs
-index 70b35a7..2147090 100644
+index 70b35a7..5567ce1 100644
 --- a/src-tauri/src/proxy/provider_router.rs
 +++ b/src-tauri/src/proxy/provider_router.rs
 @@ -130,6 +130,22 @@ impl ProviderRouter {
@@ -364,7 +1279,7 @@ index 70b35a7..2147090 100644
      /// 请求执行前获取熔断器“放行许可”
      ///
      /// - Closed：直接放行
-@@ -403,6 +419,41 @@ mod tests {
+@@ -403,6 +419,35 @@ mod tests {
          assert_eq!(providers[0].id, "a");
      }
  
@@ -374,16 +1289,10 @@ index 70b35a7..2147090 100644
 +        let _home = TempHome::new();
 +        let db = Arc::new(Database::memory().unwrap());
 +        let router = ProviderRouter::new(db.clone());
-+        let p_a = make_provider("a", "ProvA", AppType::Claude, &[CircuitBreakerState::Closed]);
-+        let p_b = make_provider("b", "ProvB", AppType::Claude, &[CircuitBreakerState::Closed]);
-+        router
-+            .db
-+            .save_provider("claude", &p_a)
-+            .expect("save a");
-+        router
-+            .db
-+            .save_provider("claude", &p_b)
-+            .expect("save b");
++        let p_a = Provider::with_id("a".to_string(), "ProvA".to_string(), json!({}), None);
++        let p_b = Provider::with_id("b".to_string(), "ProvB".to_string(), json!({}), None);
++        router.db.save_provider("claude", &p_a).expect("save a");
++        router.db.save_provider("claude", &p_b).expect("save b");
 +        let by_name = router
 +            .select_provider_by_override("claude", "prova")
 +            .await
@@ -406,12 +1315,43 @@ index 70b35a7..2147090 100644
      #[tokio::test]
      #[serial]
      async fn test_failover_enabled_uses_queue_order_ignoring_current() {
+diff --git a/src-tauri/src/proxy/usage/logger.rs b/src-tauri/src/proxy/usage/logger.rs
+index 7b6362f..2767ebd 100644
+--- a/src-tauri/src/proxy/usage/logger.rs
++++ b/src-tauri/src/proxy/usage/logger.rs
+@@ -293,7 +293,9 @@ impl<'a> UsageLogger<'a> {
+ 
+     /// 记录失败的请求（带更多上下文信息）
+     ///
+-    /// 相比 log_error，这个方法接受更多参数以提供完整的请求上下文
++    /// 相比 log_error，这个方法接受更多参数以提供完整的请求上下文。
++    /// `model` 与 `request_model` 分开传入：错误行同样按「映射后的出站模型」
++    /// 归因（与成功行一致），无映射时两者相同，前端据此决定是否显示映射箭头。
+     #[allow(clippy::too_many_arguments)]
+     pub fn log_error_with_context(
+         &self,
+@@ -301,6 +303,7 @@ impl<'a> UsageLogger<'a> {
+         provider_id: String,
+         app_type: String,
+         model: String,
++        request_model: String,
+         status_code: u16,
+         error_message: String,
+         latency_ms: u64,
+@@ -308,7 +311,6 @@ impl<'a> UsageLogger<'a> {
+         session_id: Option<String>,
+         provider_type: Option<String>,
+     ) -> Result<(), AppError> {
+-        let request_model = model.clone();
+         let log = RequestLog {
+             request_id,
+             provider_id,
 diff --git a/src-tauri/src/safety_bypass.rs b/src-tauri/src/safety_bypass.rs
 new file mode 100644
-index 0000000..576dd6a
+index 0000000..bf86517
 --- /dev/null
 +++ b/src-tauri/src/safety_bypass.rs
-@@ -0,0 +1,95 @@
+@@ -0,0 +1,100 @@
 +//! Auto Mode 安全分类器审查请求的官方直连旁路
 +//!
 +//! 当客户端处于 Auto Mode 并在第三方供应商下执行敏感命令时，Claude Code 会发出非流式安全判定请求。
@@ -480,7 +1420,12 @@ index 0000000..576dd6a
 +
 +        // 调用系统 security 命令读取 "Claude Code-credentials"
 +        let output = Command::new("/usr/bin/security")
-+            .args(&["find-generic-password", "-s", "Claude Code-credentials", "-w"])
++            .args(&[
++                "find-generic-password",
++                "-s",
++                "Claude Code-credentials",
++                "-w",
++            ])
 +            .output()
 +            .ok()?;
 +
@@ -543,3 +1488,90 @@ index 50aa7a7..df1cf1f 100644
      }
    }
  }
+diff --git a/src/components/usage/RequestLogTable.tsx b/src/components/usage/RequestLogTable.tsx
+index dc7e3da..d037dbf 100644
+--- a/src/components/usage/RequestLogTable.tsx
++++ b/src/components/usage/RequestLogTable.tsx
+@@ -308,6 +308,14 @@ export function RequestLogTable({
+                           >
+                             {log.statusCode}
+                           </span>
++                          {log.errorMessage && (
++                            <div
++                              className="text-[10px] text-red-500 max-w-[180px] truncate mx-auto"
++                              title={log.errorMessage}
++                            >
++                              {log.errorMessage}
++                            </div>
++                          )}
+                         </TableCell>
+                         <TableCell className="text-center text-xs text-muted-foreground">
+                           {log.dataSource || "proxy"}
+diff --git a/tests/components/RequestLogTable.test.tsx b/tests/components/RequestLogTable.test.tsx
+index 62c5178..5ad6d3f 100644
+--- a/tests/components/RequestLogTable.test.tsx
++++ b/tests/components/RequestLogTable.test.tsx
+@@ -158,4 +158,63 @@ describe("RequestLogTable", () => {
+       );
+     });
+   });
++
++  it("shows error reason under non-2xx status and mapped model", async () => {
++    const makeLog = (overrides: Record<string, unknown>) => ({
++      requestId: "r1",
++      providerId: "p",
++      providerName: "sensenova",
++      appType: "claude",
++      model: "kimi-k3",
++      requestModel: "claude-opus-4-8",
++      costMultiplier: "1.0",
++      inputTokens: 0,
++      outputTokens: 0,
++      cacheReadTokens: 0,
++      cacheCreationTokens: 0,
++      inputCostUsd: "0",
++      outputCostUsd: "0",
++      cacheReadCostUsd: "0",
++      cacheCreationCostUsd: "0",
++      totalCostUsd: "0",
++      isStreaming: false,
++      latencyMs: 800,
++      statusCode: 429,
++      createdAt: 1_757_000_000,
++      ...overrides,
++    });
++
++    useRequestLogsMock.mockImplementation(() => ({
++      data: {
++        data: [
++          makeLog({
++            errorMessage: "上游错误 (429): token plan entitlement exhausted",
++          }),
++        ],
++        total: 1,
++        page: 0,
++        pageSize: 20,
++      },
++      isLoading: false,
++    }));
++
++    const { container } = render(
++      <RequestLogTable
++        range={{ preset: "today" }}
++        rangeLabel="Today"
++        appType="all"
++        refreshIntervalMs={0}
++      />,
++    );
++
++    // 错误原因显示在状态码下方，全文放 title 悬浮提示
++    await waitFor(() => {
++      expect(
++        screen.getByTitle("上游错误 (429): token plan entitlement exhausted"),
++      ).toBeTruthy();
++    });
++    // 错误行同样显示模型映射
++    expect(container.textContent).toContain("claude-opus-4-8");
++    expect(container.textContent).toContain("kimi-k3");
++  });
+ });
