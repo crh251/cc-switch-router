@@ -24,7 +24,7 @@ export LC_ALL=en_US.UTF-8
 SETTINGS_DIR="${HOME}/.cc-switch/claude-settings"
 mkdir -p "${SETTINGS_DIR}"
 
-# 脚本版本：CI 构建时自动替换为短 commit id（与 app 关于窗口一致）；
+# 脚本版本：CI 构建时盖章为构建时间戳（东八区，形如 20260905_101050）；
 # 本地仓库里是占位符 "dev"
 CCS_VERSION="dev"
 # 默认继承用户级 ~/.claude/settings.json（不传 --setting-sources ""）：

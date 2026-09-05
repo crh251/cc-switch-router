@@ -59,8 +59,10 @@ jobs:
         run: |
           SHORT_SHA="${GITHUB_SHA::7}"
           sed -i '' "s/\"version\": \"3.20.1\"/\"version\": \"3.20.1+${SHORT_SHA}\"/" src/src-tauri/tauri.conf.json
-          # ccs 脚本版本同步盖章：与 app 关于窗口显示同一短 commit id
-          sed -i '' "s/CCS_VERSION=\"[^\"]*\"/CCS_VERSION=\"${SHORT_SHA}\"/" src/src-tauri/resources/ccs
+          # ccs 脚本版本盖章为构建时间戳（东八区，形如 20260905_101050）；
+          # commit id 只进 tauri.conf / Info.plist，供关于窗口对账
+          BUILD_TIME=$(TZ=Asia/Shanghai date +%Y%m%d_%H%M%S)
+          sed -i '' "s/CCS_VERSION=\"[^\"]*\"/CCS_VERSION=\"${BUILD_TIME}\"/" src/src-tauri/resources/ccs
           echo "SHORT_SHA=$SHORT_SHA" >> "$GITHUB_ENV"
           grep '"version"' src/src-tauri/tauri.conf.json
           grep 'CCS_VERSION=' src/src-tauri/resources/ccs | head -1
