@@ -625,7 +625,7 @@ index a099c4a..a6b8e23 100644
  
  #[tauri::command]
 diff --git a/src-tauri/src/lib.rs b/src-tauri/src/lib.rs
-index 36b76cb..11ce728 100644
+index 36b76cb..9a56bd7 100644
 --- a/src-tauri/src/lib.rs
 +++ b/src-tauri/src/lib.rs
 @@ -1,6 +1,7 @@
@@ -644,20 +644,29 @@ index 36b76cb..11ce728 100644
  mod services;
  mod session_manager;
  mod settings;
-@@ -499,6 +501,13 @@ pub fn run() {
+@@ -499,6 +501,10 @@ pub fn run() {
              // 让 Store 损坏或路径无效等启动警告能够真正落盘。
              let _ = app_store::refresh_app_config_dir_override(app.handle());
  
 +            // ccs：把随包的 ccs 脚本软链接到 PATH 目录（幂等，失败仅告警不阻断启动）
 +            ccs_router::install_on_startup(app.handle());
 +
-+            // ccs：启动时同步一次 per-provider settings 文件（模型映射变化由
-+            // add/update/delete_provider 命令触发生成，这里兜底修复外部漂移）
-+            ccs_router::sync_settings_files_on_startup(app.handle());
 +
              #[cfg(target_os = "windows")]
              set_windows_app_user_model_id(app.handle());
  
+@@ -1132,6 +1138,11 @@ pub fn run() {
+             // 将同一个实例注入到全局状态，避免重复创建导致的不一致
+             app.manage(app_state);
+ 
++            // ccs：启动时同步一次 per-provider settings 文件（模型映射变化由
++            // add/update/delete_provider 命令触发生成，这里兜底修复外部漂移）。
++            // 必须在 manage(app_state) 之后——setup 早段 try_state 拿不到 AppState。
++            ccs_router::sync_settings_files_on_startup(app.handle());
++
+             // 初始化 SkillService
+             let skill_service = SkillService::new();
+             app.manage(commands::skill::SkillServiceState(Arc::new(skill_service)));
 diff --git a/src-tauri/src/proxy/error_mapper.rs b/src-tauri/src/proxy/error_mapper.rs
 index 777472e..ba098f4 100644
 --- a/src-tauri/src/proxy/error_mapper.rs
