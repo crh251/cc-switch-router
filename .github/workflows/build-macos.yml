@@ -55,6 +55,13 @@ jobs:
         # 仓库根解析路径，导致补丁静默落空。
         run: patch -p1 --batch -i "../patches/${VERSION}.patch"
 
+      - name: Stamp version with commit id
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          sed -i '' "s/\"version\": \"3.20.1\"/\"version\": \"3.20.1+${SHORT_SHA}\"/" src/src-tauri/tauri.conf.json
+          echo "SHORT_SHA=$SHORT_SHA" >> "$GITHUB_ENV"
+          grep '"version"' src/src-tauri/tauri.conf.json
+
       - uses: actions/setup-node@v6
         with:
           node-version: '20'
@@ -87,6 +94,15 @@ jobs:
       - name: Build .app (aarch64)
         working-directory: src
         run: pnpm tauri build --target aarch64-apple-darwin --bundles app
+
+      - name: Stamp commit id into About panel (CFBundleVersion)
+        run: |
+          APP_DIR="src/src-tauri/target/aarch64-apple-darwin/release/bundle/macos"
+          PLIST="$APP_DIR/CC Switch Router.app/Contents/Info.plist"
+          SHORT_VERSION="${VERSION#v}"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $SHORT_VERSION" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $SHORT_SHA" "$PLIST"
+          echo "About panel -> Version $SHORT_VERSION ($SHORT_SHA)"
 
       - name: Pack DMG (create-dmg, official style)
         run: |
