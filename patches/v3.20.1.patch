@@ -835,7 +835,7 @@ index 777472e..ba098f4 100644
 +    }
  }
 diff --git a/src-tauri/src/proxy/forwarder.rs b/src-tauri/src/proxy/forwarder.rs
-index f782210..cace28e 100644
+index f782210..222e34a 100644
 --- a/src-tauri/src/proxy/forwarder.rs
 +++ b/src-tauri/src/proxy/forwarder.rs
 @@ -115,6 +115,21 @@ pub struct ForwardResult {
@@ -1070,7 +1070,28 @@ index f782210..cace28e 100644
          // 使用适配器提取 base_url
          let mut base_url = adapter.extract_base_url(provider)?;
  
-@@ -2326,6 +2375,15 @@ impl RequestForwarder {
+@@ -1879,6 +1928,20 @@ impl RequestForwarder {
+             Vec::new()
+         };
+ 
++        // 安全分类器旁路（claude-safety-bypass）携带的是官方 OAuth access token，
++        // 走 /v1/messages 必须附 oauth beta 头，否则官方直接 401。
++        // get_auth_headers 拿不到 provider 上下文，所以在这里按 provider id 补。
++        let mut auth_headers = if provider.id == "claude-safety-bypass" {
++            let mut headers = auth_headers;
++            headers.push((
++                http::HeaderName::from_static("anthropic-beta"),
++                http::HeaderValue::from_static("oauth-2025-04-20"),
++            ));
++            headers
++        } else {
++            auth_headers
++        };
++
+         let codex_oauth_session_headers =
+             if should_send_codex_oauth_session_headers && self.session_client_provided {
+                 build_codex_oauth_session_headers(&self.session_id)
+@@ -2326,6 +2389,15 @@ impl RequestForwarder {
              is_copilot,
          );
  
@@ -1087,10 +1108,10 @@ index f782210..cace28e 100644
          let response = if is_socks_proxy || !preserve_exact_header_case {
              // OpenAI / Copilot / Codex 类后端不依赖原始 header 大小写；走 reqwest
 diff --git a/src-tauri/src/proxy/handler_context.rs b/src-tauri/src/proxy/handler_context.rs
-index 29be37d..19e5815 100644
+index 29be37d..1deac1b 100644
 --- a/src-tauri/src/proxy/handler_context.rs
 +++ b/src-tauri/src/proxy/handler_context.rs
-@@ -131,22 +131,81 @@ impl RequestContext {
+@@ -131,22 +131,94 @@ impl RequestContext {
  
          // 使用共享的 ProviderRouter 选择 Provider（熔断器状态跨请求保持）
          // 注意：只在这里调用一次，结果传递给 forwarder，避免重复消耗 HalfOpen 名额
@@ -1154,8 +1175,10 @@ index 29be37d..19e5815 100644
              .cloned()
              .ok_or(ProxyError::NoAvailableProvider)?;
 +        // Auto Mode 安全分类器官方直连旁路：
-+        // 当不是 Claude Official 供应商且请求属于安全审查时，动态构建官方直连 Provider 并指定 sonnet-5 模型
-+        let (provider, request_model) = if provider.name != "Claude Official"
++        // 当不是 Claude Official 供应商且请求属于安全审查时，动态构建官方直连 Provider 并指定 sonnet-5 模型。
++        // 注意 providers 列表必须一并替换——转发器迭代的是 get_providers()（创建上下文时的列表），
++        // 只换 provider 字段的话请求仍会发给钉住的原供应商。
++        let (provider, request_model, providers) = if provider.name != "Claude Official"
 +            && crate::safety_bypass::is_safety_classifier_request(&body)
 +        {
 +            if let Some(token) = crate::safety_bypass::get_claude_keychain_token() {
@@ -1166,18 +1189,29 @@ index 29be37d..19e5815 100644
 +                let official = Provider::with_id(
 +                    "claude-safety-bypass".to_string(),
 +                    "Claude Official (Safety Bypass)".to_string(),
++                    // 凭据必须走 env.ANTHROPIC_AUTH_TOKEN：适配器的 extract_key/
++                    // extract_base_url 都从 env 读取，顶层 api_key 形状不生效；
++                    // ANTHROPIC_AUTH_TOKEN 还会命中 ClaudeAuth 策略（Bearer），
++                    // 正是官方 OAuth access token 需要的认证方式
 +                    serde_json::json!({
-+                        "api_key": token,
-+                        "base_url": "https://api.anthropic.com"
++                        "env": {
++                            "ANTHROPIC_AUTH_TOKEN": token,
++                            "ANTHROPIC_BASE_URL": "https://api.anthropic.com"
++                        }
 +                    }),
 +                    None,
 +                );
-+                (official, "claude-sonnet-5".to_string())
++                let official_for_list = official.clone();
++                (
++                    official,
++                    "claude-sonnet-5".to_string(),
++                    vec![official_for_list],
++                )
 +            } else {
-+                (provider, request_model)
++                (provider, request_model, providers)
 +            }
 +        } else {
-+            (provider, request_model)
++            (provider, request_model, providers)
 +        };
  
          log::debug!(
