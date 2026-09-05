@@ -6,6 +6,9 @@
 #   ccs <provider> [args…]  Route through the cc-switch local proxy (x-ccs-provider
 #                          header), pinned to that provider; args pass to claude
 #
+#   --dangerously-skip-permissions is passed to claude by default (skips
+#   permission prompts). Pass your own --permission-mode to override.
+#
 # Examples:
 #   ccs                    # official
 #   ccs kimi               # routed -> Kimi
@@ -22,7 +25,7 @@ SETTINGS_DIR="${HOME}/.cc-switch/claude-settings"
 mkdir -p "${SETTINGS_DIR}"
 
 # 脚本版本（改动即更新，启动时打印用于确认终端里跑的是哪一版）
-CCS_VERSION="2026.09.05-r4"
+CCS_VERSION="2026.09.05-r5"
 # 默认继承用户级 ~/.claude/settings.json（不传 --setting-sources ""）：
 # /model 才能显示 Custom 模型条目（隔离模式只会渲染官方目录）。
 # 映射显示优先取 ccs 生成的 per-provider 文件（本终端钉住的供应商），
@@ -95,15 +98,35 @@ EOF
   printf "%s" "$file"
 }
 
+# 默认给 claude 加 --dangerously-skip-permissions（跳过权限确认）。
+# 用户参数里显式带了权限相关 flag 时不重复添加，避免 claude CLI 参数冲突。
+wants_skip_permissions() {
+  for arg in "$@"; do
+    case "$arg" in
+      --dangerously-skip-permissions|--permission-mode|--permission-mode=*)
+        return 1 ;;
+    esac
+  done
+  return 0
+}
+
 case "${1:-}" in
   "")
     OFFICIAL_SETTINGS_FILE=$(make_official_settings_file)
-    exec claude --setting-sources "" --settings "${OFFICIAL_SETTINGS_FILE}"
+    if wants_skip_permissions; then
+      exec claude --dangerously-skip-permissions --setting-sources "" --settings "${OFFICIAL_SETTINGS_FILE}"
+    else
+      exec claude --setting-sources "" --settings "${OFFICIAL_SETTINGS_FILE}"
+    fi
     ;;
   official|anthropic|claude)
     shift
     OFFICIAL_SETTINGS_FILE=$(make_official_settings_file)
-    exec claude --setting-sources "" --settings "${OFFICIAL_SETTINGS_FILE}" "$@"
+    if wants_skip_permissions "$@"; then
+      exec claude --dangerously-skip-permissions --setting-sources "" --settings "${OFFICIAL_SETTINGS_FILE}" "$@"
+    else
+      exec claude --setting-sources "" --settings "${OFFICIAL_SETTINGS_FILE}" "$@"
+    fi
     ;;
   -h|--help|help)
     grep '^# ' "$0" | sed 's/^# \{0,1\}//'
@@ -181,7 +204,15 @@ echo "ccs: settings file ${SETTINGS_FILE}" >&2
 # Route through the local proxy: inject x-ccs-provider header (canonical name)
 # bash 3.2 + set -u 下空数组展开必须加 ${arr[@]+...} 保护（见 CLAUDE.md 已知 bug #2）
 if [ "$ISOLATE" = "1" ]; then
-  exec claude --setting-sources "" --settings "${SETTINGS_FILE}" "$@"
+  if wants_skip_permissions "$@"; then
+    exec claude --dangerously-skip-permissions --setting-sources "" --settings "${SETTINGS_FILE}" "$@"
+  else
+    exec claude --setting-sources "" --settings "${SETTINGS_FILE}" "$@"
+  fi
 else
-  exec claude --settings "${SETTINGS_FILE}" "$@"
+  if wants_skip_permissions "$@"; then
+    exec claude --dangerously-skip-permissions --settings "${SETTINGS_FILE}" "$@"
+  else
+    exec claude --settings "${SETTINGS_FILE}" "$@"
+  fi
 fi

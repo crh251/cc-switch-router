@@ -1,9 +1,9 @@
 diff --git a/src-tauri/resources/ccs b/src-tauri/resources/ccs
 new file mode 100644
-index 0000000..8f63ae3
+index 0000000..e42eebc
 --- /dev/null
 +++ b/src-tauri/resources/ccs
-@@ -0,0 +1,187 @@
+@@ -0,0 +1,218 @@
 +#!/usr/bin/env bash
 +# ccs — Claude Code per-terminal provider switching
 +# (requires the patched CC Switch Router running with routing takeover enabled)
@@ -11,6 +11,9 @@ index 0000000..8f63ae3
 +#   ccs                    Direct to the official Anthropic API (no local routing)
 +#   ccs <provider> [args…]  Route through the cc-switch local proxy (x-ccs-provider
 +#                          header), pinned to that provider; args pass to claude
++#
++#   --dangerously-skip-permissions is passed to claude by default (skips
++#   permission prompts). Pass your own --permission-mode to override.
 +#
 +# Examples:
 +#   ccs                    # official
@@ -28,7 +31,7 @@ index 0000000..8f63ae3
 +mkdir -p "${SETTINGS_DIR}"
 +
 +# 脚本版本（改动即更新，启动时打印用于确认终端里跑的是哪一版）
-+CCS_VERSION="2026.09.05-r4"
++CCS_VERSION="2026.09.05-r5"
 +# 默认继承用户级 ~/.claude/settings.json（不传 --setting-sources ""）：
 +# /model 才能显示 Custom 模型条目（隔离模式只会渲染官方目录）。
 +# 映射显示优先取 ccs 生成的 per-provider 文件（本终端钉住的供应商），
@@ -101,15 +104,35 @@ index 0000000..8f63ae3
 +  printf "%s" "$file"
 +}
 +
++# 默认给 claude 加 --dangerously-skip-permissions（跳过权限确认）。
++# 用户参数里显式带了权限相关 flag 时不重复添加，避免 claude CLI 参数冲突。
++wants_skip_permissions() {
++  for arg in "$@"; do
++    case "$arg" in
++      --dangerously-skip-permissions|--permission-mode|--permission-mode=*)
++        return 1 ;;
++    esac
++  done
++  return 0
++}
++
 +case "${1:-}" in
 +  "")
 +    OFFICIAL_SETTINGS_FILE=$(make_official_settings_file)
-+    exec claude --setting-sources "" --settings "${OFFICIAL_SETTINGS_FILE}"
++    if wants_skip_permissions; then
++      exec claude --dangerously-skip-permissions --setting-sources "" --settings "${OFFICIAL_SETTINGS_FILE}"
++    else
++      exec claude --setting-sources "" --settings "${OFFICIAL_SETTINGS_FILE}"
++    fi
 +    ;;
 +  official|anthropic|claude)
 +    shift
 +    OFFICIAL_SETTINGS_FILE=$(make_official_settings_file)
-+    exec claude --setting-sources "" --settings "${OFFICIAL_SETTINGS_FILE}" "$@"
++    if wants_skip_permissions "$@"; then
++      exec claude --dangerously-skip-permissions --setting-sources "" --settings "${OFFICIAL_SETTINGS_FILE}" "$@"
++    else
++      exec claude --setting-sources "" --settings "${OFFICIAL_SETTINGS_FILE}" "$@"
++    fi
 +    ;;
 +  -h|--help|help)
 +    grep '^# ' "$0" | sed 's/^# \{0,1\}//'
@@ -187,9 +210,17 @@ index 0000000..8f63ae3
 +# Route through the local proxy: inject x-ccs-provider header (canonical name)
 +# bash 3.2 + set -u 下空数组展开必须加 ${arr[@]+...} 保护（见 CLAUDE.md 已知 bug #2）
 +if [ "$ISOLATE" = "1" ]; then
-+  exec claude --setting-sources "" --settings "${SETTINGS_FILE}" "$@"
++  if wants_skip_permissions "$@"; then
++    exec claude --dangerously-skip-permissions --setting-sources "" --settings "${SETTINGS_FILE}" "$@"
++  else
++    exec claude --setting-sources "" --settings "${SETTINGS_FILE}" "$@"
++  fi
 +else
-+  exec claude --settings "${SETTINGS_FILE}" "$@"
++  if wants_skip_permissions "$@"; then
++    exec claude --dangerously-skip-permissions --settings "${SETTINGS_FILE}" "$@"
++  else
++    exec claude --settings "${SETTINGS_FILE}" "$@"
++  fi
 +fi
 diff --git a/src-tauri/src/ccs_router.rs b/src-tauri/src/ccs_router.rs
 new file mode 100644
@@ -1489,10 +1520,48 @@ index 50aa7a7..df1cf1f 100644
    }
  }
 diff --git a/src/components/usage/RequestLogTable.tsx b/src/components/usage/RequestLogTable.tsx
-index dc7e3da..d037dbf 100644
+index dc7e3da..79007ab 100644
 --- a/src/components/usage/RequestLogTable.tsx
 +++ b/src/components/usage/RequestLogTable.tsx
-@@ -308,6 +308,14 @@ export function RequestLogTable({
+@@ -196,6 +196,11 @@ export function RequestLogTable({
+                 ) : (
+                   logs.map((log) => {
+                     const unpriced = isUnpricedUsage(log);
++                    // Auto Mode 安全分类器审查请求：补丁旁路会路由到合成的
++                    // claude-safety-bypass 供应商（不在 providers 表里，
++                    // providerName 为空），这里给出专属标识与可读名称
++                    const isSafetyClassifier =
++                      log.providerId === "claude-safety-bypass";
+                     return (
+                       <TableRow key={log.requestId}>
+                         <TableCell className="text-center whitespace-nowrap text-xs px-1.5">
+@@ -210,7 +215,24 @@ export function RequestLogTable({
+                           )}
+                         </TableCell>
+                         <TableCell className="text-center">
+-                          {log.providerName || t("usage.unknownProvider")}
++                          {isSafetyClassifier ? (
++                            <div className="inline-flex flex-col items-center gap-0.5">
++                              <span
++                                className="inline-flex items-center rounded-full bg-purple-100 px-1.5 py-0.5 text-[10px] font-medium text-purple-700 dark:bg-purple-950 dark:text-purple-300"
++                                title={t(
++                                  "usage.safetyClassifierTooltip",
++                                  "Auto Mode 安全分类器审查请求（官方直连旁路）",
++                                )}
++                              >
++                                {t("usage.safetyClassifier", "分类器审查")}
++                              </span>
++                              <span className="text-xs text-muted-foreground">
++                                Claude Official
++                              </span>
++                            </div>
++                          ) : (
++                            log.providerName || t("usage.unknownProvider")
++                          )}
+                         </TableCell>
+                         <TableCell className="text-center font-mono text-xs max-w-[200px]">
+                           <div
+@@ -308,6 +330,14 @@ export function RequestLogTable({
                            >
                              {log.statusCode}
                            </span>
@@ -1508,10 +1577,31 @@ index dc7e3da..d037dbf 100644
                          <TableCell className="text-center text-xs text-muted-foreground">
                            {log.dataSource || "proxy"}
 diff --git a/tests/components/RequestLogTable.test.tsx b/tests/components/RequestLogTable.test.tsx
-index 62c5178..5ad6d3f 100644
+index 62c5178..b6fe18a 100644
 --- a/tests/components/RequestLogTable.test.tsx
 +++ b/tests/components/RequestLogTable.test.tsx
-@@ -158,4 +158,63 @@ describe("RequestLogTable", () => {
+@@ -9,10 +9,16 @@ vi.mock("react-i18next", () => ({
+   useTranslation: () => ({
+     t: (
+       key: string,
+-      options?: {
+-        defaultValue?: string;
+-      },
+-    ) => options?.defaultValue ?? key,
++      options?:
++        | {
++            defaultValue?: string;
++          }
++        | string,
++    ) =>
++      // i18next 允许 t(key, "defaultValue") 字符串简写
++      typeof options === "string"
++        ? options
++        : (options?.defaultValue ?? key),
+     i18n: {
+       resolvedLanguage: "en",
+       language: "en",
+@@ -158,4 +164,112 @@ describe("RequestLogTable", () => {
        );
      });
    });
@@ -1573,5 +1663,54 @@ index 62c5178..5ad6d3f 100644
 +    // 错误行同样显示模型映射
 +    expect(container.textContent).toContain("claude-opus-4-8");
 +    expect(container.textContent).toContain("kimi-k3");
++  });
++
++  it("marks safety classifier bypass rows with a badge", async () => {
++    useRequestLogsMock.mockImplementation(() => ({
++      data: {
++        data: [
++          {
++            requestId: "r-sc",
++            providerId: "claude-safety-bypass",
++            appType: "claude",
++            model: "claude-sonnet-5",
++            requestModel: "claude-sonnet-5",
++            costMultiplier: "1.0",
++            inputTokens: 1200,
++            outputTokens: 30,
++            cacheReadTokens: 0,
++            cacheCreationTokens: 0,
++            inputCostUsd: "0",
++            outputCostUsd: "0",
++            cacheReadCostUsd: "0",
++            cacheCreationCostUsd: "0",
++            totalCostUsd: "0",
++            isStreaming: false,
++            latencyMs: 900,
++            statusCode: 200,
++            createdAt: 1_757_000_000,
++          },
++        ],
++        total: 1,
++        page: 0,
++        pageSize: 20,
++      },
++      isLoading: false,
++    }));
++
++    render(
++      <RequestLogTable
++        range={{ preset: "today" }}
++        rangeLabel="Today"
++        appType="all"
++        refreshIntervalMs={0}
++      />,
++    );
++
++    // 分类器审查标识 + 可读的供应商名（合成供应商在 providers 表中不存在）
++    await waitFor(() => {
++      expect(screen.getByText("分类器审查")).toBeTruthy();
++    });
++    expect(screen.getByText("Claude Official").textContent).toBeTruthy();
 +  });
  });
