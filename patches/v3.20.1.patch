@@ -1224,7 +1224,7 @@ index f782210..222e34a 100644
          let response = if is_socks_proxy || !preserve_exact_header_case {
              // OpenAI / Copilot / Codex 类后端不依赖原始 header 大小写；走 reqwest
 diff --git a/src-tauri/src/proxy/handler_context.rs b/src-tauri/src/proxy/handler_context.rs
-index 29be37d..1deac1b 100644
+index 29be37d..f1c70f4 100644
 --- a/src-tauri/src/proxy/handler_context.rs
 +++ b/src-tauri/src/proxy/handler_context.rs
 @@ -131,22 +131,94 @@ impl RequestContext {
@@ -1291,15 +1291,19 @@ index 29be37d..1deac1b 100644
              .cloned()
              .ok_or(ProxyError::NoAvailableProvider)?;
 +        // Auto Mode 安全分类器官方直连旁路：
-+        // 当不是 Claude Official 供应商且请求属于安全审查时，动态构建官方直连 Provider 并指定 sonnet-5 模型。
++        // 当不是 Claude Official 供应商且请求属于安全审查时，动态构建官方直连 Provider。
 +        // 注意 providers 列表必须一并替换——转发器迭代的是 get_providers()（创建上下文时的列表），
 +        // 只换 provider 字段的话请求仍会发给钉住的原供应商。
-+        let (provider, request_model, providers) = if provider.name != "Claude Official"
++        //
++        // 旁路只换出站通道，绝不动 request_model：它必须保持客户端真实请求的模型
++        // （body.model / Gemini URL path），原样进使用统计的「请求的模型」列；
++        // 出站模型由转发器按请求体里的 model 映射，与本旁路无关。
++        let (provider, providers) = if provider.name != "Claude Official"
 +            && crate::safety_bypass::is_safety_classifier_request(&body)
 +        {
 +            if let Some(token) = crate::safety_bypass::get_claude_keychain_token() {
 +                log::info!(
-+                    "[{}] [SafetyBypass] 捕获到 Auto Mode 安全分类审查请求，自动切换为 macOS Keychain 官方直连旁路 (使用 claude-sonnet-5)",
++                    "[{}] [SafetyBypass] 捕获到 Auto Mode 安全分类审查请求，自动切换为 macOS Keychain 官方直连旁路 (request model: {request_model})",
 +                    tag
 +                );
 +                let official = Provider::with_id(
@@ -1318,16 +1322,12 @@ index 29be37d..1deac1b 100644
 +                    None,
 +                );
 +                let official_for_list = official.clone();
-+                (
-+                    official,
-+                    "claude-sonnet-5".to_string(),
-+                    vec![official_for_list],
-+                )
++                (official, vec![official_for_list])
 +            } else {
-+                (provider, request_model, providers)
++                (provider, providers)
 +            }
 +        } else {
-+            (provider, request_model, providers)
++            (provider, providers)
 +        };
  
          log::debug!(
