@@ -1,9 +1,9 @@
 diff --git a/src-tauri/resources/ccs b/src-tauri/resources/ccs
 new file mode 100644
-index 0000000..6910505
+index 0000000..f12fe50
 --- /dev/null
 +++ b/src-tauri/resources/ccs
-@@ -0,0 +1,285 @@
+@@ -0,0 +1,286 @@
 +#!/usr/bin/env bash
 +# ccs — Claude Code per-terminal provider switching
 +# (requires the patched CC Switch Router running with routing takeover enabled)
@@ -30,8 +30,9 @@ index 0000000..6910505
 +SETTINGS_DIR="${HOME}/.cc-switch/claude-settings"
 +mkdir -p "${SETTINGS_DIR}"
 +
-+# 脚本版本（改动即更新，启动时打印用于确认终端里跑的是哪一版）
-+CCS_VERSION="2026.09.05-r6"
++# 脚本版本：CI 构建时自动替换为短 commit id（与 app 关于窗口一致）；
++# 本地仓库里是占位符 "dev"
++CCS_VERSION="dev"
 +# 默认继承用户级 ~/.claude/settings.json（不传 --setting-sources ""）：
 +# /model 才能显示 Custom 模型条目（隔离模式只会渲染官方目录）。
 +# 映射显示优先取 ccs 生成的 per-provider 文件（本终端钉住的供应商），
@@ -260,7 +261,7 @@ index 0000000..6910505
 +
 +MODE_TAG=""
 +[ "$ISOLATE" = "1" ] && MODE_TAG=" (isolated)" || true
-+echo "ccs: v${CCS_VERSION} provider \"${FULL_NAME}\"${MODE_TAG}" >&2
++echo "ccs: ${CCS_VERSION} provider \"${FULL_NAME}\"${MODE_TAG}" >&2
 +sleep 1
 +
 +SAFE_NAME=$(safe_name "${FULL_NAME}")
