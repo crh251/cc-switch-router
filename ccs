@@ -25,13 +25,13 @@ SETTINGS_DIR="${HOME}/.cc-switch/claude-settings"
 mkdir -p "${SETTINGS_DIR}"
 
 # 脚本版本（改动即更新，启动时打印用于确认终端里跑的是哪一版）
-CCS_VERSION="2026.09.05-r5"
+CCS_VERSION="2026.09.05-r6"
 # 默认继承用户级 ~/.claude/settings.json（不传 --setting-sources ""）：
 # /model 才能显示 Custom 模型条目（隔离模式只会渲染官方目录）。
 # 映射显示优先取 ccs 生成的 per-provider 文件（本终端钉住的供应商），
 # 缺失的键回落到用户级文件；claude 对 settings 文件热加载，
 # cc-switch 改映射后 app 会自动重生成这些文件（补丁 v3.20.1-r3+）。
-# CCS_ISOLATE=1 恢复完全隔离模式（不继承用户级配置，/model 无 Custom 条目）。
+# CCS_ISOLATE=1 恢复隔离模式（不重定位配置目录，/model 无 Custom 条目实时性）。
 ISOLATE="${CCS_ISOLATE:-0}"
 
 json_escape() {
@@ -56,30 +56,91 @@ append_tier() {
   printf ',\n    "ANTHROPIC_DEFAULT_%s_MODEL_NAME": "%s"' "$upper" "$(json_escape "$name")"
 }
 
-make_settings_file() {
-  local provider="$1"
+PROXY_BASE_URL="http://127.0.0.1:15721"
+PROXY_AUTH_TOKEN="PROXY_MANAGED"
+
+# 生成 per-provider 配置目录（CLAUDE_CONFIG_DIR 重定位）：
+#   ~/.cc-switch/claude-home/<供应商>/settings.json 是 claude 的「用户级」settings——
+#   与 ~/.claude/settings.json 同待遇、热加载，app 改映射后即时刷新 /model。
+# 内容 = 用户真实 settings.json（保留 statusLine/permissions 等）+ env 整体覆盖
+# （接管 BASE_URL/AUTH_TOKEN + x-ccs-provider 头 + 四档位别名/映射名）。
+# 共享子项软链回主 ~/.claude（会话/历史/技能/插件跨供应商共用）。
+safe_name() {
   local safe
-  safe=$(printf "%s" "$provider" | LC_ALL=C tr -cs 'A-Za-z0-9._-' '_' | sed 's/^_\+//;s/_\+$//')
+  safe=$(printf "%s" "$1" | LC_ALL=C tr -cs 'A-Za-z0-9._-' '_' | sed 's/^_\+//;s/_\+$//')
   [ -n "$safe" ] || safe="provider"
-  local file="${SETTINGS_DIR}/${safe}.json"
-  local tmp="${file}.tmp.$$"
+  printf "%s" "$safe"
+}
 
-  {
-    printf '{\n'
-    printf '  "env": {\n'
-    printf '    "ANTHROPIC_CUSTOM_HEADERS": "x-ccs-provider: %s"' "$(json_escape "$provider")"
+setup_provider_config_home() {
+  local provider="$1" safe="$2"
+  local home="${HOME}/.cc-switch/claude-home/${safe}"
+  mkdir -p "$home"
 
-    append_tier opus   "$OFFICIAL_OPUS"   "${PROVIDER_DEFAULT_OPUS_MODEL:-}"
-    append_tier sonnet "$OFFICIAL_SONNET" "${PROVIDER_DEFAULT_SONNET_MODEL:-}"
-    append_tier haiku  "$OFFICIAL_HAIKU"  "${PROVIDER_DEFAULT_HAIKU_MODEL:-}"
-    append_tier fable  "$OFFICIAL_FABLE"  "${PROVIDER_DEFAULT_FABLE_MODEL:-}"
+  if [ -d "${HOME}/.claude" ]; then
+    for item in skills plugins projects todos history.jsonl statsig session-env \
+                downloads file-history cache shell-snapshots ide plans backups \
+                mcp-needs-auth-cache.json config.json chrome; do
+      if [ -e "${HOME}/.claude/$item" ] && [ ! -e "$home/$item" ]; then
+        ln -s "${HOME}/.claude/$item" "$home/$item" 2>/dev/null
+      fi
+    done
+  fi
+  # onboarding 状态种子（避免新 home 首启走引导流程）
+  if [ -f "${HOME}/.claude.json" ] && [ ! -e "$home/.claude.json" ]; then
+    cp "${HOME}/.claude.json" "$home/.claude.json" 2>/dev/null
+  fi
 
-    printf '\n  }\n'
-    printf '}\n'
-  } > "$tmp"
-
-  mv "$tmp" "$file"
-  printf "%s" "$file"
+  local tmp="${home}/settings.json.tmp.$$"
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "${HOME}" "$provider" \
+      "$OFFICIAL_OPUS" "$OFFICIAL_SONNET" "$OFFICIAL_HAIKU" "$OFFICIAL_FABLE" \
+      "${PROVIDER_DEFAULT_OPUS_MODEL:-}" "${PROVIDER_DEFAULT_SONNET_MODEL:-}" \
+      "${PROVIDER_DEFAULT_HAIKU_MODEL:-}" "${PROVIDER_DEFAULT_FABLE_MODEL:-}" \
+      > "$tmp" <<'PY'
+import json, os, sys
+home, provider = sys.argv[1], sys.argv[2]
+tiers = ("opus", "sonnet", "haiku", "fable")
+officials = tiers
+mapped = dict(zip(tiers, sys.argv[7:11]))
+officials = dict(zip(tiers, sys.argv[3:7]))
+base = {}
+base_path = os.path.join(home, ".claude", "settings.json")
+if os.path.isfile(base_path):
+    try:
+        base = json.load(open(base_path))
+    except Exception:
+        base = {}
+if not isinstance(base, dict):
+    base = {}
+env = {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:15721",
+    "ANTHROPIC_AUTH_TOKEN": "PROXY_MANAGED",
+    "ANTHROPIC_CUSTOM_HEADERS": f"x-ccs-provider: {provider}",
+}
+for tier in tiers:
+    key = "ANTHROPIC_DEFAULT_" + tier.upper() + "_MODEL"
+    env[key] = officials[tier]
+    env[key + "_NAME"] = mapped.get(tier) or officials[tier]
+base["env"] = env
+sys.stdout.write(json.dumps(base, indent=2, ensure_ascii=False) + "\n")
+PY
+  else
+    # 无 python3：退化为纯 provider env（丢失用户级 statusLine 等非 env 设置）
+    {
+      printf '{\n  "env": {\n'
+      printf '    "ANTHROPIC_BASE_URL": "%s",\n' "$PROXY_BASE_URL"
+      printf '    "ANTHROPIC_AUTH_TOKEN": "%s",\n' "$PROXY_AUTH_TOKEN"
+      printf '    "ANTHROPIC_CUSTOM_HEADERS": "x-ccs-provider: %s"' "$(json_escape "$provider")"
+      append_tier opus   "$OFFICIAL_OPUS"   "${PROVIDER_DEFAULT_OPUS_MODEL:-}"
+      append_tier sonnet "$OFFICIAL_SONNET" "${PROVIDER_DEFAULT_SONNET_MODEL:-}"
+      append_tier haiku  "$OFFICIAL_HAIKU"  "${PROVIDER_DEFAULT_HAIKU_MODEL:-}"
+      append_tier fable  "$OFFICIAL_FABLE"  "${PROVIDER_DEFAULT_FABLE_MODEL:-}"
+      printf '\n  }\n}\n'
+    } > "$tmp"
+  fi
+  mv "$tmp" "$home/settings.json"
+  printf "%s" "$home"
 }
 
 make_official_settings_file() {
@@ -196,23 +257,29 @@ MODE_TAG=""
 echo "ccs: v${CCS_VERSION} provider \"${FULL_NAME}\"${MODE_TAG}" >&2
 sleep 1
 
-SETTINGS_FILE=$(make_settings_file "${FULL_NAME}")
-# 打印生成的 settings 文件路径：app 会在供应商配置变化时自动重生成它，
-# claude 热加载后 /model 实时反映最新映射
-echo "ccs: settings file ${SETTINGS_FILE}" >&2
+SAFE_NAME=$(safe_name "${FULL_NAME}")
+CONFIG_HOME=$(setup_provider_config_home "${FULL_NAME}" "${SAFE_NAME}")
+# 配置目录内的 settings.json 由 app 在供应商配置变化时自动重生成，
+# claude 热加载后 /model 实时反映最新映射（无需重启）
+echo "ccs: config home ${CONFIG_HOME}" >&2
 
 # Route through the local proxy: inject x-ccs-provider header (canonical name)
 # bash 3.2 + set -u 下空数组展开必须加 ${arr[@]+...} 保护（见 CLAUDE.md 已知 bug #2）
 if [ "$ISOLATE" = "1" ]; then
+  # 隔离模式：不重定位配置目录，退回独立 settings 文件（/model 无实时性）
+  mkdir -p "${SETTINGS_DIR}"
+  SETTINGS_FILE="${SETTINGS_DIR}/${SAFE_NAME}.json"
+  cp "${CONFIG_HOME}/settings.json" "${SETTINGS_FILE}"
   if wants_skip_permissions "$@"; then
     exec claude --dangerously-skip-permissions --setting-sources "" --settings "${SETTINGS_FILE}" "$@"
   else
     exec claude --setting-sources "" --settings "${SETTINGS_FILE}" "$@"
   fi
 else
+  export CLAUDE_CONFIG_DIR="$CONFIG_HOME"
   if wants_skip_permissions "$@"; then
-    exec claude --dangerously-skip-permissions --settings "${SETTINGS_FILE}" "$@"
+    exec claude --dangerously-skip-permissions "$@"
   else
-    exec claude --settings "${SETTINGS_FILE}" "$@"
+    exec claude "$@"
   fi
 fi
