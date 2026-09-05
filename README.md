@@ -29,9 +29,9 @@ workflow 流程：下载所选版本的上游源码 tarball → `git apply patch
 
 ## 构建
 
-GitHub → **Actions** → **Build macOS arm64 (patched cc-switch)** → **Run workflow** → 下拉选择 cc-switch 版本 → Run
+**推送自动构建**：push 到 `main`（README 类文档改动除外）即自动触发构建，版本自动取 `patches/` 里最新的补丁；新推送会自动取消仍在跑的旧构建。构建完成后在 **Releases** 下载 `CC-Switch-<版本>-macos-arm64-ccs.dmg`（同版本重复构建直接覆盖 Release 里的 DMG 资产）。
 
-构建完成后在本仓库 **Releases** 下载 `CC-Switch-<版本>-macos-arm64-ccs.dmg`。
+**手动构建**：GitHub → **Actions** → **Build macOS arm64 (patched cc-switch)** → **Run workflow** → 下拉选择 cc-switch 版本 → Run（手动选择的版本优先于自动探测）
 
 ## 安装
 

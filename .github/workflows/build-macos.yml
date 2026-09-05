@@ -4,12 +4,21 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "cc-switch 版本（仅支持已适配补丁的版本）"
+        description: "cc-switch 版本（仅支持已适配补丁的版本；push 触发时忽略此项，自动取 patches/ 里最新版本）"
         type: choice
         required: true
         default: v3.20.1
         options:
           - v3.20.1
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+
+# 新推送取消仍在跑的旧构建，避免排队浪费
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -21,19 +30,30 @@ jobs:
       - name: Checkout (patch script & workflow)
         uses: actions/checkout@v6
 
-      - name: Download cc-switch source
+      - name: Resolve version
         env:
-          VERSION: ${{ inputs.version }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ -n "$INPUT_VERSION" ]; then
+            VERSION="$INPUT_VERSION"
+          else
+            # push 触发：自动取 patches/ 里版本号最大的补丁
+            VERSION=$(ls patches/*.patch | sed 's|patches/||; s|\.patch$||' | sort -V | tail -1)
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Build version: $VERSION"
+
+      - name: Download cc-switch source
         run: |
           curl -fsSL "https://github.com/farion1231/cc-switch/archive/refs/tags/${VERSION}.tar.gz" -o /tmp/src.tar.gz
           mkdir src
           tar -xzf /tmp/src.tar.gz -C src --strip-components=1
 
-      - name: Apply patch (patches/${{ inputs.version }}.patch)
+      - name: Apply patch
         working-directory: src
         # 注意：必须用 patch（按 CWD 解析路径）。git apply 在仓库子目录里会按
         # 仓库根解析路径，导致补丁静默落空。
-        run: patch -p1 --batch -i "../patches/${{ inputs.version }}.patch"
+        run: patch -p1 --batch -i "../patches/${VERSION}.patch"
 
       - uses: actions/setup-node@v6
         with:
@@ -73,7 +93,7 @@ jobs:
           HOMEBREW_NO_AUTO_UPDATE=1 brew install create-dmg
           APP_DIR="src/src-tauri/target/aarch64-apple-darwin/release/bundle/macos"
           APP_NAME="CC Switch Router.app"
-          DMG_NAME="CC-Switch-${{ inputs.version }}-macos-arm64-ccs.dmg"
+          DMG_NAME="CC-Switch-${VERSION}-macos-arm64-ccs.dmg"
           STAGE="$RUNNER_TEMP/dmg-stage"
           rm -rf "$STAGE" && mkdir -p "$STAGE"
           # 注意：只拷贝 .app 本体；若 ditto 整个 bundle/macos 目录会把真 app 套娃进假壳里
@@ -94,7 +114,6 @@ jobs:
       - name: Publish to Release
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ inputs.version }}
         run: |
           gh release create "$VERSION" "$DMG_NAME" \
             --title "CC Switch $VERSION (x-ccs-provider patched, macOS arm64)" \
