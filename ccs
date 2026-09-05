@@ -98,6 +98,7 @@ setup_provider_config_home() {
       "$OFFICIAL_OPUS" "$OFFICIAL_SONNET" "$OFFICIAL_HAIKU" "$OFFICIAL_FABLE" \
       "${PROVIDER_DEFAULT_OPUS_MODEL:-}" "${PROVIDER_DEFAULT_SONNET_MODEL:-}" \
       "${PROVIDER_DEFAULT_HAIKU_MODEL:-}" "${PROVIDER_DEFAULT_FABLE_MODEL:-}" \
+      "$home/settings.json" \
       > "$tmp" <<'PY'
 import json, os, sys
 home, provider = sys.argv[1], sys.argv[2]
@@ -123,6 +124,33 @@ for tier in tiers:
     key = "ANTHROPIC_DEFAULT_" + tier.upper() + "_MODEL"
     env[key] = officials[tier]
     env[key + "_NAME"] = mapped.get(tier) or officials[tier]
+# 插件启用状态并集：会话里 /plugin 的开关写进的是本配置目录的 settings.json，
+# 只按全局快照重建会清掉它们（表现为插件被禁用）。enabledPlugins true 优先
+# （不主动禁用用户的插件）；extraKnownMarketplaces 补缺；仅存在于既有文件的
+# 非 env 键也保留（如会话内保存的 model 默认值）。
+existing_path = sys.argv[11] if len(sys.argv) > 11 else ""
+existing = {}
+if existing_path and os.path.isfile(existing_path):
+    try:
+        existing = json.load(open(existing_path))
+    except Exception:
+        existing = {}
+if isinstance(existing, dict):
+    plugins = base.get("enabledPlugins") if isinstance(base.get("enabledPlugins"), dict) else {}
+    ex_plugins = existing.get("enabledPlugins") if isinstance(existing.get("enabledPlugins"), dict) else {}
+    for k, v in ex_plugins.items():
+        plugins[k] = True if v else plugins.get(k, v)
+    if plugins:
+        base["enabledPlugins"] = plugins
+    markets = base.get("extraKnownMarketplaces") if isinstance(base.get("extraKnownMarketplaces"), dict) else {}
+    ex_markets = existing.get("extraKnownMarketplaces") if isinstance(existing.get("extraKnownMarketplaces"), dict) else {}
+    for k, v in ex_markets.items():
+        markets.setdefault(k, v)
+    if markets:
+        base["extraKnownMarketplaces"] = markets
+    for k, v in existing.items():
+        if k != "env" and k not in base:
+            base[k] = v
 base["env"] = env
 sys.stdout.write(json.dumps(base, indent=2, ensure_ascii=False) + "\n")
 PY
@@ -148,7 +176,28 @@ make_official_settings_file() {
   local file="${SETTINGS_DIR}/official.json"
   local tmp="${file}.tmp.$$"
 
-  cat > "$tmp" <<'EOF'
+  # --setting-sources "" 会把用户级 settings 整个排除（含插件启用状态），
+  # 官方模式也要带上 enabledPlugins/extraKnownMarketplaces，否则裸 ccs 会话插件全被禁用
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - > "$tmp" <<'PY'
+import json, os
+out = {"env": {
+    "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
+    "ANTHROPIC_AUTH_TOKEN": "",
+}}
+settings_path = os.path.join(os.path.expanduser("~"), ".claude", "settings.json")
+try:
+    user = json.load(open(settings_path))
+except Exception:
+    user = {}
+if isinstance(user, dict):
+    for key in ("enabledPlugins", "extraKnownMarketplaces"):
+        if isinstance(user.get(key), dict):
+            out[key] = user[key]
+print(json.dumps(out, indent=2, ensure_ascii=False))
+PY
+  else
+    cat > "$tmp" <<'EOF'
 {
   "env": {
     "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
@@ -156,6 +205,7 @@ make_official_settings_file() {
   }
 }
 EOF
+  fi
   mv "$tmp" "$file"
   printf "%s" "$file"
 }
