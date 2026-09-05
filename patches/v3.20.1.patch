@@ -1539,10 +1539,10 @@ index 7b6362f..2767ebd 100644
              provider_id,
 diff --git a/src-tauri/src/safety_bypass.rs b/src-tauri/src/safety_bypass.rs
 new file mode 100644
-index 0000000..bf86517
+index 0000000..2e0909f
 --- /dev/null
 +++ b/src-tauri/src/safety_bypass.rs
-@@ -0,0 +1,100 @@
+@@ -0,0 +1,166 @@
 +//! Auto Mode 安全分类器审查请求的官方直连旁路
 +//!
 +//! 当客户端处于 Auto Mode 并在第三方供应商下执行敏感命令时，Claude Code 会发出非流式安全判定请求。
@@ -1556,44 +1556,58 @@ index 0000000..bf86517
 +static KEYCHAIN_TOKEN_CACHE: RwLock<Option<(String, Instant)>> = RwLock::new(None);
 +
 +/// 判断是否为 Claude Code Auto Mode 安全分类器请求
++///
++/// 指纹取自 CC 二进制里分类器调用携带的审查 prompt（`<permissions_template>`
++/// 模板：HARD/SOFT BLOCK、preliminary verdict 等独有字段名），在 system 与
++/// messages 文本中任一命中即视为分类器请求。
++///
++/// 不要放宽为 "safety"/"classifier" 这类宽泛词：正常主请求的 system 里就有
++/// "bypassing safety checks (e.g. --no-verify)"（git 指引段落），宽泛匹配会把
++/// 每条主请求都误判成分类器请求劫持到旁路——2026-09-06 修复的误伤 bug，
++/// 表现为 bypass 会话整轮报 "Please run /login"（bypass 本身不发分类器请求，
++/// 命令无条件执行，审查只存在于 auto mode）。
 +pub fn is_safety_classifier_request(body: &serde_json::Value) -> bool {
-+    // 1. 检查 system prompt
-+    if let Some(system) = body.get("system") {
-+        let system_str = if let Some(s) = system.as_str() {
-+            s.to_string()
-+        } else if let Some(arr) = system.as_array() {
-+            arr.iter()
-+                .filter_map(|v| v.get("text").and_then(|t| t.as_str()))
-+                .collect::<Vec<_>>()
-+                .join(" ")
-+        } else {
-+            String::new()
-+        };
++    const FINGERPRINTS: &[&str] = &[
++        "<permissions_template>",
++        "HARD BLOCK check",
++        "preliminary verdict",
++    ];
 +
-+        if system_str.contains("classifier")
-+            || system_str.contains("safety")
-+            || system_str.contains("determine the safety")
-+            || system_str.contains("safe to execute")
-+        {
-+            return true;
++    let mut haystack = String::new();
++
++    // system：字符串或 text 块数组
++    match body.get("system") {
++        Some(serde_json::Value::String(s)) => haystack.push_str(s),
++        Some(serde_json::Value::Array(arr)) => {
++            for v in arr {
++                if let Some(t) = v.get("text").and_then(|t| t.as_str()) {
++                    haystack.push_str(t);
++                    haystack.push(' ');
++                }
++            }
 +        }
++        _ => {}
 +    }
 +
-+    // 2. 检查 messages 中的特征
++    // messages：字符串内容或 text 块数组
 +    if let Some(messages) = body.get("messages").and_then(|m| m.as_array()) {
 +        for msg in messages {
-+            if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
-+                if content.contains("evaluate the safety")
-+                    || content.contains("Is this command safe")
-+                    || content.contains("determine whether the following command is safe")
-+                {
-+                    return true;
++            match msg.get("content") {
++                Some(serde_json::Value::String(s)) => haystack.push_str(s),
++                Some(serde_json::Value::Array(arr)) => {
++                    for v in arr {
++                        if let Some(t) = v.get("text").and_then(|t| t.as_str()) {
++                            haystack.push_str(t);
++                            haystack.push(' ');
++                        }
++                    }
 +                }
++                _ => {}
 +            }
 +        }
 +    }
 +
-+    false
++    FINGERPRINTS.iter().any(|f| haystack.contains(f))
 +}
 +
 +/// 从 macOS Keychain 中读取 Claude Code 官方 Access Token
@@ -1642,6 +1656,58 @@ index 0000000..bf86517
 +        }
 +    }
 +    None
++}
++
++#[cfg(test)]
++mod tests {
++    use super::is_safety_classifier_request;
++    use serde_json::json;
++
++    /// 正常主请求：system 里有 git 指引的 "bypassing safety checks" 字样
++    /// （CC 真实抓包，2026-09-06）——绝不能被误判为分类器请求
++    #[test]
++    fn normal_main_request_with_safety_word_is_not_classifier() {
++        let body = json!({
++            "model": "claude-haiku-4-5",
++            "system": [
++                {"type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude."},
++                {"type": "text", "text": "Identify root causes and fix underlying issues rather than bypassing safety checks (e.g. --no-verify). If you discover unexpected state like unfa…" }
++            ],
++            "messages": [{"role": "user", "content": "hi"}],
++            "stream": true
++        });
++        assert!(!is_safety_classifier_request(&body));
++    }
++
++    /// 真实分类器请求指纹：permissions_template 审查 prompt（任一指纹命中即可）
++    #[test]
++    fn auto_mode_classifier_request_is_detected() {
++        let prompt = "<permissions_template>\n## Classification Process\n4. **HARD BLOCK check**: Does the action match any HARD BLOCK condition? \u2192 `shouldBlock: true`.\n5. SOFT BLOCK matches and no exception applies \u2192 preliminary BLOCK";
++        let body = json!({
++            "model": "claude-sonnet-5",
++            "system": [{"type": "text", "text": prompt}],
++            "messages": [{"role": "user", "content": [{"type": "text", "text": "bash -lc: rm -rf /tmp/x"}]}],
++            "stream": false
++        });
++        assert!(is_safety_classifier_request(&body));
++
++        // 指纹出现在 messages（分类器 prompt 走 user message 的形态）也要命中
++        let body_in_messages = json!({
++            "model": "claude-sonnet-5",
++            "messages": [{"role": "user", "content": prompt}]
++        });
++        assert!(is_safety_classifier_request(&body_in_messages));
++    }
++
++    /// 普通文本里出现单个宽泛词（safety/classifier）不再命中
++    #[test]
++    fn loose_words_alone_do_not_match() {
++        let body = json!({
++            "system": "the classifier and safety wording alone must not trigger",
++            "messages": [{"role": "user", "content": "tell me about safety"}]
++        });
++        assert!(!is_safety_classifier_request(&body));
++    }
 +}
 diff --git a/src-tauri/tauri.conf.json b/src-tauri/tauri.conf.json
 index 50aa7a7..df1cf1f 100644
