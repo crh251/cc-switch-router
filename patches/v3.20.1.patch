@@ -1,14 +1,15 @@
 diff --git a/src-tauri/resources/ccs b/src-tauri/resources/ccs
 new file mode 100644
-index 0000000..7b22282
+index 0000000..c2105359389d6c382540393e86a67c27bfc8eed3
 --- /dev/null
 +++ b/src-tauri/resources/ccs
-@@ -0,0 +1,231 @@
+@@ -0,0 +1,185 @@
 +#!/usr/bin/env bash
 +# ccs — Claude Code per-terminal provider switching
 +# (requires the patched CC Switch Router running with routing takeover enabled)
 +#
-+#   ccs                    Direct to the official Anthropic API (no local routing)
++#   ccs                    Same as `ccs claude` (official Anthropic subscription,
++#                          routed through the local proxy so plugins load)
 +#   ccs <provider> [args…]  Route through the cc-switch local proxy (x-ccs-provider
 +#                          header), pinned to that provider; args pass to claude
 +#
@@ -16,7 +17,7 @@ index 0000000..7b22282
 +#   permission prompts). Pass your own --permission-mode to override.
 +#
 +# Examples:
-+#   ccs                    # official
++#   ccs                    # official (routed, same as ccs claude)
 +#   ccs kimi               # routed -> Kimi
 +#   ccs glm-router         # routed -> GLM standard endpoint (auto protocol conversion)
 +#   ccs kimi -c            # routed -> Kimi, continue last session
@@ -75,44 +76,6 @@ index 0000000..7b22282
 +  printf "%s" "$home"
 +}
 +
-+make_official_settings_file() {
-+  local file="${SETTINGS_DIR}/official.json"
-+  local tmp="${file}.tmp.$$"
-+
-+  # --setting-sources "" 会把用户级 settings 整个排除（含插件启用状态），
-+  # 官方模式也要带上 enabledPlugins/extraKnownMarketplaces，否则裸 ccs 会话插件全被禁用
-+  if command -v python3 >/dev/null 2>&1; then
-+    python3 - > "$tmp" <<'PY'
-+import json, os
-+out = {"env": {
-+    "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
-+    "ANTHROPIC_AUTH_TOKEN": "",
-+}}
-+settings_path = os.path.join(os.path.expanduser("~"), ".claude", "settings.json")
-+try:
-+    user = json.load(open(settings_path))
-+except Exception:
-+    user = {}
-+if isinstance(user, dict):
-+    for key in ("enabledPlugins", "extraKnownMarketplaces"):
-+        if isinstance(user.get(key), dict):
-+            out[key] = user[key]
-+print(json.dumps(out, indent=2, ensure_ascii=False))
-+PY
-+  else
-+    cat > "$tmp" <<'EOF'
-+{
-+  "env": {
-+    "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
-+    "ANTHROPIC_AUTH_TOKEN": ""
-+  }
-+}
-+EOF
-+  fi
-+  mv "$tmp" "$file"
-+  printf "%s" "$file"
-+}
-+
 +# 默认给 claude 加 --dangerously-skip-permissions（跳过权限确认）。
 +# 用户参数里显式带了权限相关 flag 时不重复添加，避免 claude CLI 参数冲突。
 +wants_skip_permissions() {
@@ -125,30 +88,21 @@ index 0000000..7b22282
 +  return 0
 +}
 +
-+case "${1:-}" in
-+  "")
-+    OFFICIAL_SETTINGS_FILE=$(make_official_settings_file)
-+    if wants_skip_permissions; then
-+      exec claude --dangerously-skip-permissions --setting-sources "" --settings "${OFFICIAL_SETTINGS_FILE}"
-+    else
-+      exec claude --setting-sources "" --settings "${OFFICIAL_SETTINGS_FILE}"
-+    fi
-+    ;;
-+  official|anthropic|claude)
-+    shift
-+    OFFICIAL_SETTINGS_FILE=$(make_official_settings_file)
-+    if wants_skip_permissions "$@"; then
-+      exec claude --dangerously-skip-permissions --setting-sources "" --settings "${OFFICIAL_SETTINGS_FILE}" "$@"
-+    else
-+      exec claude --setting-sources "" --settings "${OFFICIAL_SETTINGS_FILE}" "$@"
-+    fi
-+    ;;
-+  -h|--help|help)
-+    grep '^# ' "$0" | sed 's/^# \{0,1\}//'
-+    exit 0 ;;
-+esac
-+
-+NAME="$1"; shift
++# 官方也是一个普通路由供应商（名字 "claude"，env BASE_URL=官方地址，
++# 认证由代理实时读 Keychain OAuth token）。没有独立直连分支：
++#   ccs            等价于 ccs claude
++#   ccs -c         等价于 ccs claude -c（参数原样透传）
++#   ccs kimi -c    指定其它供应商
++NAME="claude"
++if [ $# -gt 0 ]; then
++  case "$1" in
++    -h|--help|help)
++      grep '^# ' "$0" | sed 's/^# \{0,1\}//'
++      exit 0 ;;
++    -*) ;;   # 以 - 开头的参数不是供应商名 → 用默认供应商，参数原样透传
++    *) NAME="$1"; shift ;;
++  esac
++fi
 +case "$NAME" in
 +  *'"'|*'\'*)
 +    echo "ccs: provider name contains illegal characters (quotes/backslash)" >&2

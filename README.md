@@ -52,7 +52,8 @@ open ~/Downloads/CC-Switch-<版本>-macos-arm64-ccs.dmg
 app 每次启动会自动把内置的 `ccs` 脚本安装到 `~/script/bin`（你已加入 PATH）。已开着的终端跑一次 `rehash`，或新开终端即可：
 
 ```bash
-ccs                    # 官方直连（api.anthropic.com，不经本地路由）
+ccs                    # 官方订阅（= ccs claude，走路由：插件/统计齐全）
+ccs claude             # 官方订阅供应商（token 由代理实时读 Keychain）
 ccs kimi               # 走本地路由 → Kimi（该终端固定）
 ccs openrouter         # 走本地路由 → OpenRouter
 ccs glm-router         # 走本地路由 → GLM 标准端点（协议转换自动完成）
