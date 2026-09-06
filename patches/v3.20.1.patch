@@ -1,9 +1,9 @@
 diff --git a/src-tauri/resources/ccs b/src-tauri/resources/ccs
 new file mode 100755
-index 0000000000000000000000000000000000000000..9dcacc31a27f60ea8b06c4b877bb46bc70751390
+index 0000000000000000000000000000000000000000..dff7f74283b271f4332b782443dde712f8754adc
 --- /dev/null
 +++ b/src-tauri/resources/ccs
-@@ -0,0 +1,260 @@
+@@ -0,0 +1,261 @@
 +#!/usr/bin/env bash
 +# ccs — Claude Code per-terminal provider switching
 +# (requires the patched CC Switch Router running with routing takeover enabled)
@@ -13,8 +13,10 @@ index 0000000000000000000000000000000000000000..9dcacc31a27f60ea8b06c4b877bb46bc
 +#   ccs <provider> [args…]  Route through the cc-switch local proxy (x-ccs-provider
 +#                          header), pinned to that provider; args pass to claude
 +#
-+#   --dangerously-skip-permissions is passed to claude by default (skips
-+#   permission prompts). Pass your own --permission-mode to override.
++#   --dangerously-skip-permissions is passed to claude by default for ROUTED
++#   providers (skips permission prompts). Pass your own --permission-mode to
++#   override. Official mode (bare ccs / ccs claude) starts claude natively and
++#   never adds the flag.
 +#
 +# Examples:
 +#   ccs                    # official direct (no local routing, plugins loaded)
@@ -30,7 +32,7 @@ index 0000000000000000000000000000000000000000..9dcacc31a27f60ea8b06c4b877bb46bc
 +
 +# 脚本版本：写死为最后一次逻辑修改的时间戳（东八区，形如 20260906_100050）；
 +# ccs 逻辑有更新时必须同步改成当时的修改时间（app 关于窗口显示的就是这个版本）
-+CCS_VERSION="20260906_182517"
++CCS_VERSION="20260906_200256"
 +
 +
 +# 准备 per-provider 配置目录（CLAUDE_CONFIG_DIR 重定位）。settings.json 由
@@ -134,8 +136,9 @@ index 0000000000000000000000000000000000000000..9dcacc31a27f60ea8b06c4b877bb46bc
 +  mv "$tmp" "$file"
 +}
 +
-+# 默认给 claude 加 --dangerously-skip-permissions（跳过权限确认）。
-+# 用户参数里显式带了权限相关 flag 时不重复添加，避免 claude CLI 参数冲突。
++# 默认给 claude 加 --dangerously-skip-permissions（跳过权限确认）——仅路由供应商。
++# 官方直连模式不传（原生权限确认照常），用户参数里显式带了权限相关 flag 时
++# 也不重复添加，避免 claude CLI 参数冲突。
 +wants_skip_permissions() {
 +  for arg in "$@"; do
 +    case "$arg" in
@@ -184,12 +187,10 @@ index 0000000000000000000000000000000000000000..9dcacc31a27f60ea8b06c4b877bb46bc
 +  fi
 +  # 只保留 user（config-dir）这一层设置源：在 ~ 等目录下 ~/.claude/settings.json
 +  # （全局接管文件，env 含 AUTH_TOKEN=PROXY_MANAGED）会被当作项目级 settings 加载，
-+  # org pin 凭据检查扫到即拒绝启动（已知 bug 18）；官方会话不需要项目/本地层的接管 env
-+  if wants_skip_permissions "$@"; then
-+    exec claude --dangerously-skip-permissions --setting-sources user "$@"
-+  else
-+    exec claude --setting-sources user "$@"
-+  fi
++  # org pin 凭据检查扫到即拒绝启动（已知 bug 18）；官方会话不需要项目/本地层的接管 env。
++  # 官方模式不加 --dangerously-skip-permissions：权限确认走 claude 原生行为
++  # （用户自己传了该 flag 则随 "$@" 原样生效）
++  exec claude --setting-sources user "$@"
 +fi
 +
 +NAME="$1"; shift
