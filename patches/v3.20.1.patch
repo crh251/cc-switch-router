@@ -1233,7 +1233,7 @@ index f782210..222e34a 100644
          // 使用适配器提取 base_url
          let mut base_url = adapter.extract_base_url(provider)?;
  
-@@ -1879,6 +1928,20 @@ impl RequestForwarder {
+@@ -1879,6 +1928,39 @@ impl RequestForwarder {
              Vec::new()
          };
  
@@ -1247,6 +1247,25 @@ index f782210..222e34a 100644
 +                http::HeaderValue::from_static("oauth-2025-04-20"),
 +            ));
 +            headers
++        } else if provider.id == "claude-official-direct" {
++            // 官方订阅直连供应商：env 里的 AUTH_TOKEN 只是占位符，实时读
++            // Keychain 的官方 OAuth token（claude 客户端会自动刷新它，静态
++            // 拷贝会过期），并补 oauth beta 头。Keychain 读不到时保留 env
++            // 值出站（会 401，统计页可查）。
++            match crate::safety_bypass::get_claude_keychain_token() {
++                Some(token) => {
++                    let mut headers = Vec::new();
++                    if let Ok(value) = http::HeaderValue::from_str(&format!("Bearer {token}")) {
++                        headers.push((http::HeaderName::from_static("authorization"), value));
++                    }
++                    headers.push((
++                        http::HeaderName::from_static("anthropic-beta"),
++                        http::HeaderValue::from_static("oauth-2025-04-20"),
++                    ));
++                    headers
++                }
++                None => auth_headers,
++            }
 +        } else {
 +            auth_headers
 +        };
