@@ -1,9 +1,9 @@
 diff --git a/src-tauri/resources/ccs b/src-tauri/resources/ccs
 new file mode 100644
-index 0000000..1ddbc3f4f87e92cda797dfa6666dc9afbd54d368
+index 0000000..83acef049889bacca2ce503f8d3329dccee7444e
 --- /dev/null
 +++ b/src-tauri/resources/ccs
-@@ -0,0 +1,267 @@
+@@ -0,0 +1,278 @@
 +#!/usr/bin/env bash
 +# ccs — Claude Code per-terminal provider switching
 +# (requires the patched CC Switch Router running with routing takeover enabled)
@@ -97,6 +97,16 @@ index 0000000..1ddbc3f4f87e92cda797dfa6666dc9afbd54d368
 +out = {"env": {
 +    "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
 +    "ANTHROPIC_AUTH_TOKEN": "",
++    # 官方 /model 回归原生：显式置空四组档位键，压掉全局 ~/.claude/settings.json
++    # 里被接管写入的 ANTHROPIC_DEFAULT_*_MODEL(_NAME)（config-dir 每键优先）
++    "ANTHROPIC_DEFAULT_OPUS_MODEL": "",
++    "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME": "",
++    "ANTHROPIC_DEFAULT_SONNET_MODEL": "",
++    "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME": "",
++    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "",
++    "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME": "",
++    "ANTHROPIC_DEFAULT_FABLE_MODEL": "",
++    "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME": "",
 +}}
 +plugins, markets = {}, {}
 +sources = [os.path.expanduser("~/.claude/settings.json"),
@@ -164,6 +174,7 @@ index 0000000..1ddbc3f4f87e92cda797dfa6666dc9afbd54d368
 +    IS_OFFICIAL=1 ;;
 +esac
 +if [ "$IS_OFFICIAL" = "1" ]; then
++  echo "ccs: ${CCS_VERSION} official direct (claude-official home)" >&2
 +  CONFIG_HOME=$(setup_provider_config_home "claude-official" "${OFFICIAL_HOME_NAME}")
 +  make_official_settings_file "${CONFIG_HOME}"
 +  export CLAUDE_CONFIG_DIR="$CONFIG_HOME"
