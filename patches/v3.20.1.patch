@@ -1,9 +1,9 @@
 diff --git a/src-tauri/resources/ccs b/src-tauri/resources/ccs
 new file mode 100644
-index 0000000..83acef049889bacca2ce503f8d3329dccee7444e
+index 0000000..29968e6e4e1a5d7850a697bb5aba4b0d8ce53278
 --- /dev/null
 +++ b/src-tauri/resources/ccs
-@@ -0,0 +1,278 @@
+@@ -0,0 +1,260 @@
 +#!/usr/bin/env bash
 +# ccs — Claude Code per-terminal provider switching
 +# (requires the patched CC Switch Router running with routing takeover enabled)
@@ -28,19 +28,9 @@ index 0000000..83acef049889bacca2ce503f8d3329dccee7444e
 +# non-UTF-8 locales (fixes "NAME<0xE3>: unbound variable")
 +export LC_ALL=en_US.UTF-8
 +
-+SETTINGS_DIR="${HOME}/.cc-switch/claude-settings"
-+mkdir -p "${SETTINGS_DIR}"
-+
-+# 脚本版本：CI 构建时盖章为构建时间戳（东八区，形如 20260905_101050）；
-+# 本地仓库里是占位符 "dev"
-+CCS_VERSION="dev"
-+# 默认继承用户级 ~/.claude/settings.json（不传 --setting-sources ""）：
-+# /model 才能显示 Custom 模型条目（隔离模式只会渲染官方目录）。
-+# per-provider settings 文件由 CC Switch Router 写入与维护（映射显示取
-+# 本终端钉住供应商的那份，缺失的键回落到用户级文件）；claude 热加载 settings，
-+# cc-switch 改映射后 app 会自动重生成这些文件（补丁 v3.20.1-r3+）。
-+# CCS_ISOLATE=1 恢复隔离模式（不重定位配置目录，/model 无 Custom 条目实时性）。
-+ISOLATE="${CCS_ISOLATE:-0}"
++# 脚本版本：写死为最后一次逻辑修改的时间戳（东八区，形如 20260906_100050）；
++# ccs 逻辑有更新时必须同步改成当时的修改时间（app 关于窗口显示的就是这个版本）
++CCS_VERSION="20260906_153555"
 +
 +
 +# 准备 per-provider 配置目录（CLAUDE_CONFIG_DIR 重定位）。settings.json 由
@@ -96,9 +86,11 @@ index 0000000..83acef049889bacca2ce503f8d3329dccee7444e
 +home = sys.argv[1]
 +out = {"env": {
 +    "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
-+    "ANTHROPIC_AUTH_TOKEN": "",
-+    # 官方 /model 回归原生：显式置空四组档位键，压掉全局 ~/.claude/settings.json
-+    # 里被接管写入的 ANTHROPIC_DEFAULT_*_MODEL(_NAME)（config-dir 每键优先）
++    # 不得写 ANTHROPIC_AUTH_TOKEN（连空串占位都不行）：托管策略 org pin 按「键存在」
++    # 判定非 OAuth 凭据，交互式启动直接报错（CLAUDE.md 已知 bug 18）。2.1.263 实测
++    # config-dir 会话不合并全局 settings，旧方案「空串压制全局接管 env」已无必要。
++    # 官方 /model 回归原生：置空四组档位键（旧版二进制会合并全局文件，防御性压掉
++    # 被接管写入的 ANTHROPIC_DEFAULT_*_MODEL(_NAME)）
 +    "ANTHROPIC_DEFAULT_OPUS_MODEL": "",
 +    "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME": "",
 +    "ANTHROPIC_DEFAULT_SONNET_MODEL": "",
@@ -134,8 +126,7 @@ index 0000000..83acef049889bacca2ce503f8d3329dccee7444e
 +    cat > "$tmp" <<'EOF'
 +{
 +  "env": {
-+    "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
-+    "ANTHROPIC_AUTH_TOKEN": ""
++    "ANTHROPIC_BASE_URL": "https://api.anthropic.com"
 +  }
 +}
 +EOF
@@ -178,6 +169,9 @@ index 0000000..83acef049889bacca2ce503f8d3329dccee7444e
 +  CONFIG_HOME=$(setup_provider_config_home "claude-official" "${OFFICIAL_HOME_NAME}")
 +  make_official_settings_file "${CONFIG_HOME}"
 +  export CLAUDE_CONFIG_DIR="$CONFIG_HOME"
++  # org pin（托管策略）要求官方会话只有 OAuth 凭据：清掉 shell 可能带入的
++  # ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN，避免非 OAuth 凭据启动报错（已知 bug 18）
++  unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN
 +  # CLAUDE_CONFIG_DIR 下 claude 用带目录哈希后缀的独立 Keychain 键，官方 home
 +  # 没有独立登录记录 → 实时读主目录键注入 CLAUDE_CODE_OAUTH_TOKEN（token 由
 +  # 主目录会话自动刷新，不落盘；读不到时跳过，claude 会自己提示 /login）
@@ -188,10 +182,13 @@ index 0000000..83acef049889bacca2ce503f8d3329dccee7444e
 +      export CLAUDE_CODE_OAUTH_TOKEN="${OAUTH_TOKEN}"
 +    fi
 +  fi
++  # 只保留 user（config-dir）这一层设置源：在 ~ 等目录下 ~/.claude/settings.json
++  # （全局接管文件，env 含 AUTH_TOKEN=PROXY_MANAGED）会被当作项目级 settings 加载，
++  # org pin 凭据检查扫到即拒绝启动（已知 bug 18）；官方会话不需要项目/本地层的接管 env
 +  if wants_skip_permissions "$@"; then
-+    exec claude --dangerously-skip-permissions "$@"
++    exec claude --dangerously-skip-permissions --setting-sources user "$@"
 +  else
-+    exec claude "$@"
++    exec claude --setting-sources user "$@"
 +  fi
 +fi
 +
@@ -244,9 +241,7 @@ index 0000000..83acef049889bacca2ce503f8d3329dccee7444e
 +fi
 +
 +
-+MODE_TAG=""
-+[ "$ISOLATE" = "1" ] && MODE_TAG=" (isolated)" || true
-+echo "ccs: ${CCS_VERSION} provider \"${FULL_NAME}\"${MODE_TAG}" >&2
++echo "ccs: ${CCS_VERSION} provider \"${FULL_NAME}\"" >&2
 +sleep 1
 +
 +SAFE_NAME=$(safe_name "${FULL_NAME}")
@@ -263,24 +258,11 @@ index 0000000..83acef049889bacca2ce503f8d3329dccee7444e
 +echo "ccs: config home ${CONFIG_HOME}" >&2
 +
 +# Route through the local proxy: inject x-ccs-provider header (canonical name)
-+# bash 3.2 + set -u 下空数组展开必须加 ${arr[@]+...} 保护（见 CLAUDE.md 已知 bug #2）
-+if [ "$ISOLATE" = "1" ]; then
-+  # 隔离模式：不重定位配置目录，退回独立 settings 文件（/model 无实时性）
-+  mkdir -p "${SETTINGS_DIR}"
-+  SETTINGS_FILE="${SETTINGS_DIR}/${SAFE_NAME}.json"
-+  cp "${CONFIG_HOME}/settings.json" "${SETTINGS_FILE}"
-+  if wants_skip_permissions "$@"; then
-+    exec claude --dangerously-skip-permissions --setting-sources "" --settings "${SETTINGS_FILE}" "$@"
-+  else
-+    exec claude --setting-sources "" --settings "${SETTINGS_FILE}" "$@"
-+  fi
++export CLAUDE_CONFIG_DIR="$CONFIG_HOME"
++if wants_skip_permissions "$@"; then
++  exec claude --dangerously-skip-permissions "$@"
 +else
-+  export CLAUDE_CONFIG_DIR="$CONFIG_HOME"
-+  if wants_skip_permissions "$@"; then
-+    exec claude --dangerously-skip-permissions "$@"
-+  else
-+    exec claude "$@"
-+  fi
++  exec claude "$@"
 +fi
 diff --git a/src-tauri/src/ccs_router.rs b/src-tauri/src/ccs_router.rs
 new file mode 100644
