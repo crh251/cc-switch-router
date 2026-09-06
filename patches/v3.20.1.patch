@@ -1,6 +1,6 @@
 diff --git a/src-tauri/resources/ccs b/src-tauri/resources/ccs
 new file mode 100755
-index 0000000000000000000000000000000000000000..dff7f74283b271f4332b782443dde712f8754adc
+index 0000000..dff7f74
 --- /dev/null
 +++ b/src-tauri/resources/ccs
 @@ -0,0 +1,261 @@
@@ -267,7 +267,7 @@ index 0000000000000000000000000000000000000000..dff7f74283b271f4332b782443dde712
 +fi
 diff --git a/src-tauri/src/ccs_router.rs b/src-tauri/src/ccs_router.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..6c5457ab5b25ccf2e285f0443b0b7c73585b8cc2
+index 0000000..6c5457a
 --- /dev/null
 +++ b/src-tauri/src/ccs_router.rs
 @@ -0,0 +1,362 @@
@@ -634,7 +634,7 @@ index 0000000000000000000000000000000000000000..6c5457ab5b25ccf2e285f0443b0b7c73
 +    }
 +}
 diff --git a/src-tauri/src/commands/provider.rs b/src-tauri/src/commands/provider.rs
-index a099c4acbe617fbc5ca80778d09537da1cd6df13..a6b8e23273254a1744a4d099d322834a0280d202 100644
+index a099c4a..a6b8e23 100644
 --- a/src-tauri/src/commands/provider.rs
 +++ b/src-tauri/src/commands/provider.rs
 @@ -48,8 +48,12 @@ pub async fn add_provider(
@@ -685,7 +685,7 @@ index a099c4acbe617fbc5ca80778d09537da1cd6df13..a6b8e23273254a1744a4d099d322834a
  
  #[tauri::command]
 diff --git a/src-tauri/src/database/mod.rs b/src-tauri/src/database/mod.rs
-index cdd947e7cd7def61320dbadf75634c3f95052342..29e7d61b44d2225c1b483b3c4742d24fc96e451b 100644
+index cdd947e..29e7d61 100644
 --- a/src-tauri/src/database/mod.rs
 +++ b/src-tauri/src/database/mod.rs
 @@ -53,7 +53,7 @@ use std::sync::Mutex;
@@ -698,7 +698,7 @@ index cdd947e7cd7def61320dbadf75634c3f95052342..29e7d61b44d2225c1b483b3c4742d24f
  /// 安全地序列化 JSON，避免 unwrap panic
  pub(crate) fn to_json_string<T: Serialize>(value: &T) -> Result<String, AppError> {
 diff --git a/src-tauri/src/database/schema.rs b/src-tauri/src/database/schema.rs
-index 0af5d99cfe2d91291d3fd2ee54f59821ac20cd2d..1ee7248bde4bf0bab0632e3fdff33c573b245e25 100644
+index 0af5d99..1ee7248 100644
 --- a/src-tauri/src/database/schema.rs
 +++ b/src-tauri/src/database/schema.rs
 @@ -207,7 +207,8 @@ impl Database {
@@ -759,7 +759,7 @@ index 0af5d99cfe2d91291d3fd2ee54f59821ac20cd2d..1ee7248bde4bf0bab0632e3fdff33c57
          // 缺表的库（异常/测试夹具）跳过：create_tables 会以含列的新 DDL 建表。
          if Self::table_exists(conn, "session_log_sync")? {
 diff --git a/src-tauri/src/lib.rs b/src-tauri/src/lib.rs
-index 36b76cb6562a9bd142cbf02798f0a1b21576c161..e2bbdf34534081b1263a0143b48c75508542769b 100644
+index 36b76cb..e2bbdf3 100644
 --- a/src-tauri/src/lib.rs
 +++ b/src-tauri/src/lib.rs
 @@ -1,6 +1,7 @@
@@ -802,8 +802,28 @@ index 36b76cb6562a9bd142cbf02798f0a1b21576c161..e2bbdf34534081b1263a0143b48c7550
              // 初始化 SkillService
              let skill_service = SkillService::new();
              app.manage(commands::skill::SkillServiceState(Arc::new(skill_service)));
+diff --git a/src-tauri/src/provider.rs b/src-tauri/src/provider.rs
+index ccc37ea..948e476 100644
+--- a/src-tauri/src/provider.rs
++++ b/src-tauri/src/provider.rs
+@@ -552,6 +552,15 @@ pub struct ProviderMeta {
+     /// 用于多账号支持，关联到特定的 GitHub 账号
+     #[serde(rename = "githubAccountId", skip_serializing_if = "Option::is_none")]
+     pub github_account_id: Option<String>,
++    /// ccs 补丁：分类器审查官方直连旁路开关（仅 Claude 供应商）。
++    /// 开启时该供应商会话里 Auto Mode 的安全分类器请求改走官方直连
++    /// （Keychain OAuth token + api.anthropic.com）；缺省/关闭 = 原版行为，
++    /// 分类器请求照常发给当前供应商。
++    #[serde(
++        rename = "officialClassifierBypass",
++        skip_serializing_if = "Option::is_none"
++    )]
++    pub official_classifier_bypass: Option<bool>,
+ }
+ 
+ /// 解析 Provider 级自定义 User-Agent 字符串（单一真理来源）。
 diff --git a/src-tauri/src/proxy/error_mapper.rs b/src-tauri/src/proxy/error_mapper.rs
-index 777472ea5059927c009fad7359b10d8f32d1435a..ba098f4c126028a4dc8c0c797e9db03745a23bfc 100644
+index 777472e..ba098f4 100644
 --- a/src-tauri/src/proxy/error_mapper.rs
 +++ b/src-tauri/src/proxy/error_mapper.rs
 @@ -86,6 +86,77 @@ pub fn get_error_message(error: &ProxyError) -> String {
@@ -970,7 +990,7 @@ index 777472ea5059927c009fad7359b10d8f32d1435a..ba098f4c126028a4dc8c0c797e9db037
 +    }
  }
 diff --git a/src-tauri/src/proxy/forwarder.rs b/src-tauri/src/proxy/forwarder.rs
-index f78221066e0557c35236512b1802b40cfe7b4201..87dbc85705d6995395e1b2d4f4bdc27741c1e435 100644
+index f782210..87dbc85 100644
 --- a/src-tauri/src/proxy/forwarder.rs
 +++ b/src-tauri/src/proxy/forwarder.rs
 @@ -107,6 +107,9 @@ pub struct ForwardResult {
@@ -1304,7 +1324,7 @@ index f78221066e0557c35236512b1802b40cfe7b4201..87dbc85705d6995395e1b2d4f4bdc277
          let response = if is_socks_proxy || !preserve_exact_header_case {
              // OpenAI / Copilot / Codex 类后端不依赖原始 header 大小写；走 reqwest
 diff --git a/src-tauri/src/proxy/handler_context.rs b/src-tauri/src/proxy/handler_context.rs
-index 29be37d7d252eaa696f81f520a7711d8c3426acb..2222883ddba5e512fd51190a9d6bd4370bdabd79 100644
+index 29be37d..b2b8210 100644
 --- a/src-tauri/src/proxy/handler_context.rs
 +++ b/src-tauri/src/proxy/handler_context.rs
 @@ -53,6 +53,18 @@ pub struct RequestContext {
@@ -1326,7 +1346,7 @@ index 29be37d7d252eaa696f81f520a7711d8c3426acb..2222883ddba5e512fd51190a9d6bd437
      /// 日志标签（如 "Claude"、"Codex"、"Gemini"）
      pub tag: &'static str,
      /// 应用类型字符串（如 "claude"、"codex"、"gemini"）
-@@ -131,22 +143,101 @@ impl RequestContext {
+@@ -131,22 +143,109 @@ impl RequestContext {
  
          // 使用共享的 ProviderRouter 选择 Provider（熔断器状态跨请求保持）
          // 注意：只在这里调用一次，结果传递给 forwarder，避免重复消耗 HalfOpen 名额
@@ -1390,15 +1410,23 @@ index 29be37d7d252eaa696f81f520a7711d8c3426acb..2222883ddba5e512fd51190a9d6bd437
              .cloned()
              .ok_or(ProxyError::NoAvailableProvider)?;
 +        // Auto Mode 安全分类器官方直连旁路：
-+        // 当不是 Claude Official 供应商且请求属于安全审查时，动态构建官方直连 Provider。
++        // 旁路按供应商开关放行（meta.officialClassifierBypass，ccs 补丁，默认关）：
++        // 关 = 原版行为，分类器请求照常发给当前供应商；开 + 非 Claude Official +
++        // 请求属于安全审查时，动态构建官方直连 Provider。
 +        // 注意 providers 列表必须一并替换——转发器迭代的是 get_providers()（创建上下文时的列表），
 +        // 只换 provider 字段的话请求仍会发给钉住的原供应商。
 +        //
 +        // 旁路只换出站通道，绝不动 request_model：它必须保持客户端真实请求的模型
 +        // （body.model / Gemini URL path），原样进使用统计的「请求的模型」列；
 +        // 出站模型由转发器按请求体里的 model 映射，与本旁路无关。
++        let classifier_bypass_enabled = provider
++            .meta
++            .as_ref()
++            .and_then(|meta| meta.official_classifier_bypass)
++            .unwrap_or(false);
 +        let (provider, providers, classifier_body, origin_provider) =
-+            if provider.name != "Claude Official"
++            if classifier_bypass_enabled
++                && provider.name != "Claude Official"
 +                && crate::safety_bypass::is_safety_classifier_request(&body)
 +            {
 +                if let Some(token) = crate::safety_bypass::get_claude_keychain_token() {
@@ -1438,7 +1466,7 @@ index 29be37d7d252eaa696f81f520a7711d8c3426acb..2222883ddba5e512fd51190a9d6bd437
  
          log::debug!(
              "[{}] Provider: {}, model: {}, failover chain: {} providers, session: {}",
-@@ -165,6 +256,9 @@ impl RequestContext {
+@@ -165,6 +264,9 @@ impl RequestContext {
              current_provider_id,
              request_model,
              outbound_model: None,
@@ -1449,7 +1477,7 @@ index 29be37d7d252eaa696f81f520a7711d8c3426acb..2222883ddba5e512fd51190a9d6bd437
              app_type_str,
              app_type,
 diff --git a/src-tauri/src/proxy/handlers.rs b/src-tauri/src/proxy/handlers.rs
-index 0fd6b8244e15f62d2f436d7e15fe12476dbdce2a..4c9d298b0d13609233c133435d3cefbdcd55f221 100644
+index 0fd6b82..4c9d298 100644
 --- a/src-tauri/src/proxy/handlers.rs
 +++ b/src-tauri/src/proxy/handlers.rs
 @@ -9,8 +9,8 @@
@@ -1811,7 +1839,7 @@ index 0fd6b8244e15f62d2f436d7e15fe12476dbdce2a..4c9d298b0d13609233c133435d3cefbd
          log::warn!("[USG-001] 记录使用量失败: {e}");
      }
 diff --git a/src-tauri/src/proxy/provider_router.rs b/src-tauri/src/proxy/provider_router.rs
-index 70b35a7d795790a4c172b80be14b30066e73ec91..5567ce1da96ffee87204c98a7f8b85dda7101010 100644
+index 70b35a7..5567ce1 100644
 --- a/src-tauri/src/proxy/provider_router.rs
 +++ b/src-tauri/src/proxy/provider_router.rs
 @@ -130,6 +130,22 @@ impl ProviderRouter {
@@ -1874,7 +1902,7 @@ index 70b35a7d795790a4c172b80be14b30066e73ec91..5567ce1da96ffee87204c98a7f8b85dd
      #[serial]
      async fn test_failover_enabled_uses_queue_order_ignoring_current() {
 diff --git a/src-tauri/src/proxy/response_processor.rs b/src-tauri/src/proxy/response_processor.rs
-index 45fa41ae5d4f0a2a4566eec8ac8add05721592b5..2c0fb2a0314869c46f969006323b3af1ec9cfd01 100644
+index 45fa41a..2c0fb2a 100644
 --- a/src-tauri/src/proxy/response_processor.rs
 +++ b/src-tauri/src/proxy/response_processor.rs
 @@ -494,6 +494,9 @@ pub(crate) fn create_usage_collector(
@@ -1998,7 +2026,7 @@ index 45fa41ae5d4f0a2a4566eec8ac8add05721592b5..2c0fb2a0314869c46f969006323b3af1
          .await;
  
 diff --git a/src-tauri/src/proxy/usage/logger.rs b/src-tauri/src/proxy/usage/logger.rs
-index 7b6362ff391f99de32d7cd170d4bf0a5de7b17de..e1006d87f6a0bd678c659cf1e483604854a991a1 100644
+index 7b6362f..e1006d8 100644
 --- a/src-tauri/src/proxy/usage/logger.rs
 +++ b/src-tauri/src/proxy/usage/logger.rs
 @@ -72,6 +72,13 @@ pub struct RequestLog {
@@ -2141,7 +2169,7 @@ index 7b6362ff391f99de32d7cd170d4bf0a5de7b17de..e1006d87f6a0bd678c659cf1e4836048
          logger.log_request(&log)?;
 diff --git a/src-tauri/src/safety_bypass.rs b/src-tauri/src/safety_bypass.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..09b1149b477ce3c3fde3c8157c82da2224b8fa22
+index 0000000..09b1149
 --- /dev/null
 +++ b/src-tauri/src/safety_bypass.rs
 @@ -0,0 +1,166 @@
@@ -2312,7 +2340,7 @@ index 0000000000000000000000000000000000000000..09b1149b477ce3c3fde3c8157c82da22
 +    }
 +}
 diff --git a/src-tauri/src/services/usage_stats.rs b/src-tauri/src/services/usage_stats.rs
-index ea227f068854c90402dfda00515ab16c94947fe0..43100727a4c3ed695bc812811d5299466f5e6c59 100644
+index ea227f0..4310072 100644
 --- a/src-tauri/src/services/usage_stats.rs
 +++ b/src-tauri/src/services/usage_stats.rs
 @@ -158,17 +158,28 @@ pub struct RequestLogDetail {
@@ -2388,7 +2416,7 @@ index ea227f068854c90402dfda00515ab16c94947fe0..43100727a4c3ed695bc812811d529946
               WHERE CAST(total_cost_usd AS REAL) <= 0
                 AND (input_tokens > 0 OR output_tokens > 0
 diff --git a/src-tauri/tauri.conf.json b/src-tauri/tauri.conf.json
-index 50aa7a79d122d3dfa37fc85a7e11ee2d701bff27..df1cf1fed9219eef48e54b3ae33edab2d29851ac 100644
+index 50aa7a7..df1cf1f 100644
 --- a/src-tauri/tauri.conf.json
 +++ b/src-tauri/tauri.conf.json
 @@ -1,6 +1,6 @@
@@ -2423,8 +2451,134 @@ index 50aa7a79d122d3dfa37fc85a7e11ee2d701bff27..df1cf1fed9219eef48e54b3ae33edab2
      }
    }
  }
+diff --git a/src/components/providers/forms/ClaudeFormFields.tsx b/src/components/providers/forms/ClaudeFormFields.tsx
+index 58f3c3d..bcf4597 100644
+--- a/src/components/providers/forms/ClaudeFormFields.tsx
++++ b/src/components/providers/forms/ClaudeFormFields.tsx
+@@ -17,6 +17,7 @@ import {
+   SelectTrigger,
+   SelectValue,
+ } from "@/components/ui/select";
++import { Switch } from "@/components/ui/switch";
+ import {
+   ChevronDown,
+   ChevronRight,
+@@ -159,6 +160,10 @@ interface ClaudeFormFieldsProps {
+   onLocalProxyHeadersOverrideChange: (value: string) => void;
+   localProxyBodyOverride: string;
+   onLocalProxyBodyOverrideChange: (value: string) => void;
++
++  // ccs 补丁：分类器审查官方直连旁路（默认关）
++  officialClassifierBypass: boolean;
++  onOfficialClassifierBypassChange: (value: boolean) => void;
+ }
+ 
+ export function ClaudeFormFields({
+@@ -219,6 +224,8 @@ export function ClaudeFormFields({
+   onApiKeyFieldChange,
+   isFullUrl,
+   onFullUrlChange,
++  officialClassifierBypass,
++  onOfficialClassifierBypassChange,
+   customUserAgent,
+   onCustomUserAgentChange,
+   localProxyHeadersOverride,
+@@ -239,6 +246,7 @@ export function ClaudeFormFields({
+     subagentModel ||
+     (!isXaiOauthPreset && apiFormat !== "anthropic") ||
+     apiKeyField !== "ANTHROPIC_AUTH_TOKEN" ||
++    officialClassifierBypass ||
+     customUserAgent ||
+     hasRequestOverrides
+   );
+@@ -884,6 +892,32 @@ export function ClaudeFormFields({
+               </p>
+             </div>
+ 
++            {/* 分类器审查官方直连旁路（ccs 补丁，默认关 = 原版行为） */}
++            {category !== "official" && (
++              <div className="flex items-center justify-between gap-4 border-t border-border-default pt-3">
++                <div className="space-y-1">
++                  <FormLabel>
++                    {t("providerForm.officialClassifierBypassLabel", {
++                      defaultValue: "分类器审查走官方",
++                    })}
++                  </FormLabel>
++                  <p className="text-xs leading-relaxed text-muted-foreground">
++                    {t("providerForm.officialClassifierBypassHint", {
++                      defaultValue:
++                        "开启后，Auto Mode 的安全分类器审查请求直连官方 api.anthropic.com（使用本机 Keychain 的官方登录凭据）；默认关闭，审查请求随当前供应商发出（原版行为）。",
++                    })}
++                  </p>
++                </div>
++                <Switch
++                  checked={officialClassifierBypass}
++                  onCheckedChange={onOfficialClassifierBypassChange}
++                  aria-label={t("providerForm.officialClassifierBypassLabel", {
++                    defaultValue: "分类器审查走官方",
++                  })}
++                />
++              </div>
++            )}
++
+             {/* 模型映射 */}
+             <div className="space-y-1 border-t border-border-default pt-2">
+               <div className="flex items-center justify-between">
+diff --git a/src/components/providers/forms/ProviderForm.tsx b/src/components/providers/forms/ProviderForm.tsx
+index a312a8c..c42e500 100644
+--- a/src/components/providers/forms/ProviderForm.tsx
++++ b/src/components/providers/forms/ProviderForm.tsx
+@@ -365,6 +365,13 @@ function ProviderFormFull({
+     return initialData?.meta?.isFullUrl ?? false;
+   });
+ 
++  // ccs 补丁：分类器审查官方直连旁路（仅 Claude 供应商，默认关）
++  const [officialClassifierBypass, setOfficialClassifierBypass] =
++    useState<boolean>(() => {
++      if (appId !== "claude") return false;
++      return initialData?.meta?.officialClassifierBypass ?? false;
++    });
++
+   const [pricingConfig, setPricingConfig] = useState<{
+     enabled: boolean;
+     costMultiplier?: string;
+@@ -402,6 +409,11 @@ function ProviderFormFull({
+     setLocalIsFullUrl(
+       supportsFullUrl ? (initialData?.meta?.isFullUrl ?? false) : false,
+     );
++    setOfficialClassifierBypass(
++      appId === "claude"
++        ? (initialData?.meta?.officialClassifierBypass ?? false)
++        : false,
++    );
+     setPricingConfig({
+       enabled:
+         initialData?.meta?.costMultiplier !== undefined ||
+@@ -1828,6 +1840,13 @@ function ProviderFormFull({
+         localIsFullUrl
+           ? true
+           : undefined,
++      // ccs 补丁：仅 Claude 供应商持久化；true 才写，缺省 = 关（原版行为）
++      officialClassifierBypass:
++        appId === "claude" &&
++        category !== "official" &&
++        officialClassifierBypass
++          ? true
++          : undefined,
+     };
+ 
+     if (!isClaudeCodexOauthProvider && "codexFastMode" in nextMeta) {
+@@ -2428,6 +2447,8 @@ function ProviderFormFull({
+               onApiKeyFieldChange={handleApiKeyFieldChange}
+               isFullUrl={localIsFullUrl}
+               onFullUrlChange={setLocalIsFullUrl}
++              officialClassifierBypass={officialClassifierBypass}
++              onOfficialClassifierBypassChange={setOfficialClassifierBypass}
+               customUserAgent={customUserAgent}
+               onCustomUserAgentChange={setCustomUserAgent}
+               localProxyHeadersOverride={localProxyHeadersOverride}
 diff --git a/src/components/usage/RequestLogTable.tsx b/src/components/usage/RequestLogTable.tsx
-index dc7e3da752a8cdd250972c5708a2394f93c209a8..f39c1edd7783dd59259434ec2d4ff2ad6cc56323 100644
+index dc7e3da..f39c1ed 100644
 --- a/src/components/usage/RequestLogTable.tsx
 +++ b/src/components/usage/RequestLogTable.tsx
 @@ -196,6 +196,11 @@ export function RequestLogTable({
@@ -2520,8 +2674,73 @@ index dc7e3da752a8cdd250972c5708a2394f93c209a8..f39c1edd7783dd59259434ec2d4ff2ad
                          </TableCell>
                          <TableCell className="text-center text-xs text-muted-foreground">
                            {log.dataSource || "proxy"}
+diff --git a/src/i18n/locales/en.json b/src/i18n/locales/en.json
+index 13bd598..c34f9a8 100644
+--- a/src/i18n/locales/en.json
++++ b/src/i18n/locales/en.json
+@@ -1305,6 +1305,8 @@
+     "authFieldAuthToken": "ANTHROPIC_AUTH_TOKEN (Default)",
+     "authFieldApiKey": "ANTHROPIC_API_KEY",
+     "authFieldHint": "Select the authentication env variable name for the config",
++    "officialClassifierBypassLabel": "Send classifier reviews to official API",
++    "officialClassifierBypassHint": "When enabled, Auto Mode safety classifier review requests go directly to the official api.anthropic.com using the official credentials from the local Keychain. Off by default: review requests are sent to the current provider (upstream behavior).",
+     "apiHintResponses": "💡 Fill in OpenAI Responses API compatible service endpoint, avoid trailing slash",
+     "anthropicDefaultHaikuModel": "Default Haiku Model",
+     "anthropicDefaultSonnetModel": "Default Sonnet Model",
+diff --git a/src/i18n/locales/ja.json b/src/i18n/locales/ja.json
+index 8a0c339..316259b 100644
+--- a/src/i18n/locales/ja.json
++++ b/src/i18n/locales/ja.json
+@@ -1305,6 +1305,8 @@
+     "authFieldAuthToken": "ANTHROPIC_AUTH_TOKEN（デフォルト）",
+     "authFieldApiKey": "ANTHROPIC_API_KEY",
+     "authFieldHint": "設定に書き込む認証環境変数名を選択",
++    "officialClassifierBypassLabel": "分類器審査を公式 API に直送",
++    "officialClassifierBypassHint": "有効にすると、Auto Mode の安全分類器審査リクエストは公式 api.anthropic.com へ直接送信されます（ローカル Keychain の公式ログイン資格情報を使用）。デフォルトは無効で、審査リクエストは現在のプロバイダーに送信されます（原本の動作）。",
+     "apiHintResponses": "💡 OpenAI Responses API 互換サービスのエンドポイントを入力してください。末尾にスラッシュを付けないでください",
+     "anthropicDefaultHaikuModel": "既定 Haiku モデル",
+     "anthropicDefaultSonnetModel": "既定 Sonnet モデル",
+diff --git a/src/i18n/locales/zh-TW.json b/src/i18n/locales/zh-TW.json
+index 12064a9..e827bf2 100644
+--- a/src/i18n/locales/zh-TW.json
++++ b/src/i18n/locales/zh-TW.json
+@@ -1306,6 +1306,8 @@
+     "authFieldAuthToken": "ANTHROPIC_AUTH_TOKEN（預設）",
+     "authFieldApiKey": "ANTHROPIC_API_KEY",
+     "authFieldHint": "選擇寫入設定的驗證環境變數名稱",
++    "officialClassifierBypassLabel": "分類器審查走官方",
++    "officialClassifierBypassHint": "開啟後，Auto Mode 的安全分類器審查請求直連官方 api.anthropic.com（使用本機 Keychain 的官方登入憑證）；預設關閉，審查請求隨目前供應商發出（原版行為）。",
+     "apiHintResponses": "填寫相容 OpenAI Responses API 的伺服器端點位址，請勿以斜線結尾",
+     "anthropicDefaultHaikuModel": "Haiku 預設模型",
+     "anthropicDefaultSonnetModel": "Sonnet 預設模型",
+diff --git a/src/i18n/locales/zh.json b/src/i18n/locales/zh.json
+index 313b248..37a5c8c 100644
+--- a/src/i18n/locales/zh.json
++++ b/src/i18n/locales/zh.json
+@@ -1305,6 +1305,8 @@
+     "authFieldAuthToken": "ANTHROPIC_AUTH_TOKEN（默认）",
+     "authFieldApiKey": "ANTHROPIC_API_KEY",
+     "authFieldHint": "选择写入配置的认证环境变量名",
++    "officialClassifierBypassLabel": "分类器审查走官方",
++    "officialClassifierBypassHint": "开启后，Auto Mode 的安全分类器审查请求直连官方 api.anthropic.com（使用本机 Keychain 的官方登录凭据）；默认关闭，审查请求随当前供应商发出（原版行为）。",
+     "apiHintResponses": "💡 填写兼容 OpenAI Responses API 的服务端点地址，不要以斜杠结尾",
+     "anthropicDefaultHaikuModel": "Haiku 默认模型",
+     "anthropicDefaultSonnetModel": "Sonnet 默认模型",
+diff --git a/src/types.ts b/src/types.ts
+index 560d3cf..430a423 100644
+--- a/src/types.ts
++++ b/src/types.ts
+@@ -236,6 +236,8 @@ export interface ProviderMeta {
+   providerType?: string;
+   // GitHub Copilot 关联账号 ID（旧字段，保留兼容读取）
+   githubAccountId?: string;
++  // ccs 补丁：Auto Mode 安全分类器审查官方直连旁路开关（仅 Claude 供应商；默认关闭 = 原版行为）
++  officialClassifierBypass?: boolean;
+ }
+ 
+ // Skill 同步方式
 diff --git a/src/types/usage.ts b/src/types/usage.ts
-index c9047b7f7fa8aff318e70bd473cd2512fc02b4a0..d854b9494fa151752081d9f45cc8efd33d93c257 100644
+index c9047b7..d854b94 100644
 --- a/src/types/usage.ts
 +++ b/src/types/usage.ts
 @@ -34,6 +34,12 @@ export interface RequestLog {
@@ -2537,8 +2756,21 @@ index c9047b7f7fa8aff318e70bd473cd2512fc02b4a0..d854b9494fa151752081d9f45cc8efd3
  }
  
  export interface SessionSyncResult {
+diff --git a/tests/components/ClaudeFormFields.test.tsx b/tests/components/ClaudeFormFields.test.tsx
+index e6a9c8d..f77a70a 100644
+--- a/tests/components/ClaudeFormFields.test.tsx
++++ b/tests/components/ClaudeFormFields.test.tsx
+@@ -94,6 +94,8 @@ const renderCopilotForm = (overrides: Partial<ClaudeFormFieldsProps> = {}) => {
+     onApiKeyFieldChange: vi.fn(),
+     isFullUrl: false,
+     onFullUrlChange: vi.fn(),
++    officialClassifierBypass: false,
++    onOfficialClassifierBypassChange: vi.fn(),
+     customUserAgent: "",
+     onCustomUserAgentChange: vi.fn(),
+     localProxyHeadersOverride: "",
 diff --git a/tests/components/RequestLogTable.test.tsx b/tests/components/RequestLogTable.test.tsx
-index 62c5178be23692664f179205ec30dcb03011b672..710b33ecc61a30c2c0f30e67a020992b96e75548 100644
+index 62c5178..710b33e 100644
 --- a/tests/components/RequestLogTable.test.tsx
 +++ b/tests/components/RequestLogTable.test.tsx
 @@ -9,10 +9,16 @@ vi.mock("react-i18next", () => ({
