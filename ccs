@@ -2,8 +2,8 @@
 # ccs — Claude Code per-terminal provider switching
 # (requires the patched CC Switch Router running with routing takeover enabled)
 #
-#   ccs                    Same as `ccs claude` (official Anthropic subscription,
-#                          routed through the local proxy so plugins load)
+#   ccs                    Direct to the official Anthropic API (no local routing;
+#                          same config-home mechanism, official settings.json)
 #   ccs <provider> [args…]  Route through the cc-switch local proxy (x-ccs-provider
 #                          header), pinned to that provider; args pass to claude
 #
@@ -11,7 +11,7 @@
 #   permission prompts). Pass your own --permission-mode to override.
 #
 # Examples:
-#   ccs                    # official (routed, same as ccs claude)
+#   ccs                    # official direct (no local routing, plugins loaded)
 #   ccs kimi               # routed -> Kimi
 #   ccs glm-router         # routed -> GLM standard endpoint (auto protocol conversion)
 #   ccs kimi -c            # routed -> Kimi, continue last session
@@ -70,6 +70,63 @@ setup_provider_config_home() {
   printf "%s" "$home"
 }
 
+# 官方直连的 config home settings：env 块带官方地址（BASE_URL/AUTH_TOKEN 空串
+# = 走 claude.ai OAuth），插件启用状态取全局 ~/.claude/settings.json ∪ 既有 home
+# 文件的并集（true 优先——/plugin 的开关写在 home 自己的 settings.json 里）。
+# 必须走 CLAUDE_CONFIG_DIR 标准源：--setting-sources "" + --settings 非标准源下
+# 插件解析失败（实测 4/5 failed to load），标准源与路由供应商机制完全一致。
+# 注意：该 home 不对应 cc-switch 供应商，app 启动的遗留目录清理会删掉它，
+# ccs 每次启动重建（脚手架幂等）。
+OFFICIAL_HOME_NAME="claude-official"
+
+make_official_settings_file() {
+  local home="$1"
+  local file="${home}/settings.json"
+  local tmp="${file}.tmp.$$"
+
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$home" > "$tmp" <<'PY'
+import json, glob, os, sys
+home = sys.argv[1]
+out = {"env": {
+    "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
+    "ANTHROPIC_AUTH_TOKEN": "",
+}}
+plugins, markets = {}, {}
+sources = [os.path.expanduser("~/.claude/settings.json"),
+           os.path.join(home, "settings.json")]
+sources += sorted(glob.glob(os.path.join(
+    os.path.expanduser("~"), ".cc-switch", "claude-home", "*", "settings.json")))
+for path in sources:
+    try:
+        user = json.load(open(path))
+    except Exception:
+        continue
+    if not isinstance(user, dict):
+        continue
+    for k, v in (user.get("enabledPlugins") or {}).items():
+        plugins[k] = bool(v) or plugins.get(k, False)
+    for k, v in (user.get("extraKnownMarketplaces") or {}).items():
+        markets.setdefault(k, v)
+if plugins:
+    out["enabledPlugins"] = plugins
+if markets:
+    out["extraKnownMarketplaces"] = markets
+print(json.dumps(out, indent=2, ensure_ascii=False))
+PY
+  else
+    cat > "$tmp" <<'EOF'
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
+    "ANTHROPIC_AUTH_TOKEN": ""
+  }
+}
+EOF
+  fi
+  mv "$tmp" "$file"
+}
+
 # 默认给 claude 加 --dangerously-skip-permissions（跳过权限确认）。
 # 用户参数里显式带了权限相关 flag 时不重复添加，避免 claude CLI 参数冲突。
 wants_skip_permissions() {
@@ -82,21 +139,46 @@ wants_skip_permissions() {
   return 0
 }
 
-# 官方也是一个普通路由供应商（名字 "claude"，env BASE_URL=官方地址，
-# 认证由代理实时读 Keychain OAuth token）。没有独立直连分支：
-#   ccs            等价于 ccs claude
-#   ccs -c         等价于 ccs claude -c（参数原样透传）
-#   ccs kimi -c    指定其它供应商
-NAME="claude"
-if [ $# -gt 0 ]; then
-  case "$1" in
-    -h|--help|help)
-      grep '^# ' "$0" | sed 's/^# \{0,1\}//'
-      exit 0 ;;
-    -*) ;;   # 以 - 开头的参数不是供应商名 → 用默认供应商，参数原样透传
-    *) NAME="$1"; shift ;;
-  esac
+# 官方不走路由、不是 cc-switch 供应商：与路由供应商同一套 CLAUDE_CONFIG_DIR
+# 机制，settings.json 内容为官方配置（见 make_official_settings_file）。
+#   ccs / ccs claude / ccs official / ccs anthropic   官方直连
+#   ccs -c / ccs --version   首参以 - 开头视为官方模式的 claude 参数
+case "${1:-}" in
+  -h|--help|help)
+    grep '^# ' "$0" | sed 's/^# \{0,1\}//'
+    exit 0 ;;
+esac
+
+IS_OFFICIAL=0
+case "${1:-}" in
+  ""|claude|official|anthropic)
+    IS_OFFICIAL=1
+    [ $# -gt 0 ] && shift ;;
+  -*)
+    IS_OFFICIAL=1 ;;
+esac
+if [ "$IS_OFFICIAL" = "1" ]; then
+  CONFIG_HOME=$(setup_provider_config_home "claude-official" "${OFFICIAL_HOME_NAME}")
+  make_official_settings_file "${CONFIG_HOME}"
+  export CLAUDE_CONFIG_DIR="$CONFIG_HOME"
+  # CLAUDE_CONFIG_DIR 下 claude 用带目录哈希后缀的独立 Keychain 键，官方 home
+  # 没有独立登录记录 → 实时读主目录键注入 CLAUDE_CODE_OAUTH_TOKEN（token 由
+  # 主目录会话自动刷新，不落盘；读不到时跳过，claude 会自己提示 /login）
+  if command -v /usr/bin/security >/dev/null 2>&1; then
+    OAUTH_TOKEN=$(/usr/bin/security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null \
+      | python3 -c "import json,sys; print(json.load(sys.stdin).get('claudeAiOauth',{}).get('accessToken',''))" 2>/dev/null || true)
+    if [ -n "${OAUTH_TOKEN}" ]; then
+      export CLAUDE_CODE_OAUTH_TOKEN="${OAUTH_TOKEN}"
+    fi
+  fi
+  if wants_skip_permissions "$@"; then
+    exec claude --dangerously-skip-permissions "$@"
+  else
+    exec claude "$@"
+  fi
 fi
+
+NAME="$1"; shift
 case "$NAME" in
   *'"'|*'\'*)
     echo "ccs: provider name contains illegal characters (quotes/backslash)" >&2
