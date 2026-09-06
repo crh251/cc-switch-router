@@ -1,6 +1,6 @@
 diff --git a/src-tauri/resources/ccs b/src-tauri/resources/ccs
-new file mode 100644
-index 0000000000000000000000000000000000000000..65b84b8952045f7df7f097ac8c9fcafe7f9e5374
+new file mode 100755
+index 0000000000000000000000000000000000000000..9dcacc31a27f60ea8b06c4b877bb46bc70751390
 --- /dev/null
 +++ b/src-tauri/resources/ccs
 @@ -0,0 +1,260 @@
@@ -266,26 +266,22 @@ index 0000000000000000000000000000000000000000..65b84b8952045f7df7f097ac8c9fcafe
 +fi
 diff --git a/src-tauri/src/ccs_router.rs b/src-tauri/src/ccs_router.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..5d422a4a72f21970e6c7f6ddb8c9b941d051703f
+index 0000000000000000000000000000000000000000..6c5457ab5b25ccf2e285f0443b0b7c73585b8cc2
 --- /dev/null
 +++ b/src-tauri/src/ccs_router.rs
-@@ -0,0 +1,440 @@
-+//! ccs 脚本安装器 + per-provider settings 文件同步
+@@ -0,0 +1,362 @@
++//! ccs 脚本分发 + per-provider settings 文件同步
 +//!
-+//! 脚本安装：安装到 $HOME/script/bin（用户已加入 PATH）
-+//!
-+//! 运行介质判定：尝试 chmod 包内资源——
-+//! - 成功 = 正常磁盘运行 → 建立**软链接**指向包内资源（app 升级自动跟随）
-+//! - 失败 = 只读卷（DMG 直接运行）→ **拷贝完整脚本内容**（755）
-+//! 内容一致则跳过（幂等）。所有失败只记日志，不阻断启动。
++//! 脚本分发：随包 resources/ccs 仅作为发布产物存在（CI 校验它与补丁仓库
++//! 顶层 ccs 逐字节一致）。**app 启动不再安装/软链到 ~/script/bin**——
++//! ~/script/bin/ccs 由用户手工软链到补丁仓库顶层 ccs（项目工作区），
++//! 改脚本立即生效，无需重新打包部署 app（2026-09-06 起）。
 +//!
 +//! settings 文件同步：ccs 启动 claude 时传入 ~/.cc-switch/claude-settings/<供应商>.json，
 +//! claude 对 settings 文件热加载，因此供应商配置（模型映射）在 UI 里变化后由
 +//! `regenerate_claude_settings_files` 重生成对应文件，终端里 /model 即时显示最新映射，
 +//! 无需重启。文件内容与 ccs 脚本生成的完全一致（_MODEL=官方档位别名，_MODEL_NAME=映射名）。
 +
-+use std::os::unix::fs::PermissionsExt;
-+use std::path::PathBuf;
 +use tauri::Manager;
 +
 +use crate::database::Database;
@@ -298,81 +294,6 @@ index 0000000000000000000000000000000000000000..5d422a4a72f21970e6c7f6ddb8c9b941
 +const OFFICIAL_SONNET: &str = "claude-sonnet-4-6";
 +const OFFICIAL_HAIKU: &str = "claude-haiku-4-5";
 +const OFFICIAL_FABLE: &str = "claude-fable-5";
-+
-+pub fn install_on_startup(app: &tauri::AppHandle) {
-+    if !cfg!(unix) {
-+        log::warn!("[ccs] 非 unix 平台，跳过 ccs 安装");
-+        return;
-+    }
-+    let Ok(resource) = app
-+        .path()
-+        .resolve("resources/ccs", tauri::path::BaseDirectory::Resource)
-+    else {
-+        log::warn!("[ccs] 无法解析打包资源 resources/ccs");
-+        return;
-+    };
-+    let Ok(script) = std::fs::read_to_string(&resource) else {
-+        log::warn!("[ccs] 无法读取打包的 ccs 脚本");
-+        return;
-+    };
-+    if !script.starts_with("#!") {
-+        log::warn!("[ccs] 打包的 ccs 脚本内容异常，跳过安装");
-+        return;
-+    }
-+
-+    // 运行介质判定：只读卷（DMG 运行）上 chmod 会失败
-+    let on_readonly_volume = match std::fs::metadata(&resource) {
-+        Ok(meta) => {
-+            let mut perms = meta.permissions();
-+            perms.set_mode(0o755);
-+            std::fs::set_permissions(&resource, perms).is_err()
-+        }
-+        Err(_) => true,
-+    };
-+
-+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
-+        log::warn!("[ccs] 无法获取 HOME，跳过 ccs 安装");
-+        return;
-+    };
-+    let dir = home.join("script/bin");
-+    if let Err(e) = std::fs::create_dir_all(&dir) {
-+        log::warn!("[ccs] 无法创建 {}: {e}", dir.display());
-+        return;
-+    }
-+    let link = dir.join("ccs");
-+
-+    // 幂等：已安装且内容一致则跳过
-+    if let Ok(existing) = std::fs::read_to_string(&link) {
-+        if existing == script {
-+            log::info!("[ccs] ccs 已是最新: {}", link.display());
-+            return;
-+        }
-+    }
-+    // 旧软链接/旧副本先清理
-+    let _ = std::fs::remove_file(&link);
-+
-+    if on_readonly_volume {
-+        // DMG 只读卷：拷贝完整脚本内容
-+        match std::fs::write(&link, &script).and_then(|()| {
-+            let mut perms = std::fs::metadata(&link)?.permissions();
-+            perms.set_mode(0o755);
-+            std::fs::set_permissions(&link, perms)
-+        }) {
-+            Ok(()) => log::info!("[ccs] 只读卷模式：完整脚本已拷贝到 {}", link.display()),
-+            Err(e) => log::warn!("[ccs] 拷贝失败 {}: {e}", link.display()),
-+        }
-+    } else {
-+        // 正常磁盘：软链接指向包内资源
-+        match std::os::unix::fs::symlink(&resource, &link) {
-+            Ok(()) => log::info!(
-+                "[ccs] 软链接已建立: {} -> {}",
-+                link.display(),
-+                resource.display()
-+            ),
-+            Err(e) => log::warn!("[ccs] 软链接失败 {}: {e}", link.display()),
-+        }
-+    }
-+}
 +
 +/// 启动时同步一次 per-provider settings 文件（修复应用外部的手工漂移）
 +pub fn sync_settings_files_on_startup(app: &tauri::AppHandle) {
@@ -585,6 +506,7 @@ index 0000000000000000000000000000000000000000..5d422a4a72f21970e6c7f6ddb8c9b941
 +    use serde_json::json;
 +    use serial_test::serial;
 +    use std::env;
++    use std::path::PathBuf;
 +    use std::sync::Arc;
 +    use tempfile::TempDir;
 +
@@ -836,7 +758,7 @@ index 0af5d99cfe2d91291d3fd2ee54f59821ac20cd2d..1ee7248bde4bf0bab0632e3fdff33c57
          // 缺表的库（异常/测试夹具）跳过：create_tables 会以含列的新 DDL 建表。
          if Self::table_exists(conn, "session_log_sync")? {
 diff --git a/src-tauri/src/lib.rs b/src-tauri/src/lib.rs
-index 36b76cb6562a9bd142cbf02798f0a1b21576c161..9a56bd7c0ad3ef44f88d7ad7d70c69e5c911c9d7 100644
+index 36b76cb6562a9bd142cbf02798f0a1b21576c161..e2bbdf34534081b1263a0143b48c75508542769b 100644
 --- a/src-tauri/src/lib.rs
 +++ b/src-tauri/src/lib.rs
 @@ -1,6 +1,7 @@
@@ -855,18 +777,19 @@ index 36b76cb6562a9bd142cbf02798f0a1b21576c161..9a56bd7c0ad3ef44f88d7ad7d70c69e5
  mod services;
  mod session_manager;
  mod settings;
-@@ -499,6 +501,10 @@ pub fn run() {
+@@ -499,6 +501,11 @@ pub fn run() {
              // 让 Store 损坏或路径无效等启动警告能够真正落盘。
              let _ = app_store::refresh_app_config_dir_override(app.handle());
  
-+            // ccs：把随包的 ccs 脚本软链接到 PATH 目录（幂等，失败仅告警不阻断启动）
-+            ccs_router::install_on_startup(app.handle());
++            // ccs 脚本不再由 app 安装/软链（~/script/bin/ccs 由用户手工指向
++            // 补丁仓库顶层 ccs，改脚本即时生效无需重新打包）；随包
++            // resources/ccs 仅作为发布产物存在。
 +
 +
              #[cfg(target_os = "windows")]
              set_windows_app_user_model_id(app.handle());
  
-@@ -1132,6 +1138,11 @@ pub fn run() {
+@@ -1132,6 +1139,11 @@ pub fn run() {
              // 将同一个实例注入到全局状态，避免重复创建导致的不一致
              app.manage(app_state);
  
