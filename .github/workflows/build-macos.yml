@@ -55,18 +55,25 @@ jobs:
         # 仓库根解析路径，导致补丁静默落空。
         run: patch -p1 --batch -i "../patches/${VERSION}.patch"
 
-      - name: Stamp version with commit id
+      - name: Stamp commit id; collect ccs version
         run: |
           SHORT_SHA="${GITHUB_SHA::7}"
           sed -i '' "s/\"version\": \"3.20.1\"/\"version\": \"3.20.1+${SHORT_SHA}\"/" src/src-tauri/tauri.conf.json
-          # ccs 脚本版本盖章为构建时间戳（东八区，形如 20260905_101050）；
-          # commit id 只进 tauri.conf / Info.plist，供关于窗口对账
-          BUILD_TIME=$(TZ=Asia/Shanghai date +%Y%m%d_%H%M%S)
-          sed -i '' "s/CCS_VERSION=\"[^\"]*\"/CCS_VERSION=\"${BUILD_TIME}\"/" src/src-tauri/resources/ccs
+          # ccs 版本写死在脚本里（逻辑更新时随改），CI 不盖章、只读取供关于窗口对账。
+          # 顺便校验补丁内嵌 resources/ccs 与仓库顶层 ccs 逐字节一致（曾漂移过）
+          if ! cmp -s ccs src/src-tauri/resources/ccs; then
+            echo "::error::patches 内嵌 resources/ccs 与仓库顶层 ccs 不一致，请先同步补丁"
+            exit 1
+          fi
+          CCS_VER=$(sed -n 's/^CCS_VERSION="\([^"]*\)"/\1/p' ccs | head -1)
+          if [ -z "$CCS_VER" ]; then
+            echo "::error::ccs 里读不到 CCS_VERSION"
+            exit 1
+          fi
           echo "SHORT_SHA=$SHORT_SHA" >> "$GITHUB_ENV"
-          echo "BUILD_TIME=$BUILD_TIME" >> "$GITHUB_ENV"
+          echo "CCS_VER=$CCS_VER" >> "$GITHUB_ENV"
           grep '"version"' src/src-tauri/tauri.conf.json
-          grep 'CCS_VERSION=' src/src-tauri/resources/ccs | head -1
+          grep 'CCS_VERSION=' ccs | head -1
 
       - uses: actions/setup-node@v6
         with:
@@ -106,8 +113,8 @@ jobs:
           APP_DIR="src/src-tauri/target/aarch64-apple-darwin/release/bundle/macos"
           PLIST="$APP_DIR/CC Switch Router.app/Contents/Info.plist"
           SHORT_VERSION="${VERSION#v}"
-          # 括号里同时带 commit id 与 ccs 脚本时间戳：关于窗口一处看全两套版本
-          BUNDLE_VERSION="${SHORT_SHA}, ccs ${BUILD_TIME}"
+          # 括号里同时带 commit id 与 ccs 版本（写死在脚本里的最后修改时间戳）
+          BUNDLE_VERSION="${SHORT_SHA}, ccs ${CCS_VER}"
           /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $SHORT_VERSION" "$PLIST"
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUNDLE_VERSION" "$PLIST"
           echo "About panel -> Version $SHORT_VERSION+$SHORT_SHA ($BUNDLE_VERSION)"
