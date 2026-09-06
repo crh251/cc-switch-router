@@ -1324,7 +1324,7 @@ index f782210..87dbc85 100644
          let response = if is_socks_proxy || !preserve_exact_header_case {
              // OpenAI / Copilot / Codex 类后端不依赖原始 header 大小写；走 reqwest
 diff --git a/src-tauri/src/proxy/handler_context.rs b/src-tauri/src/proxy/handler_context.rs
-index 29be37d..b2b8210 100644
+index 29be37d..a62bc3e 100644
 --- a/src-tauri/src/proxy/handler_context.rs
 +++ b/src-tauri/src/proxy/handler_context.rs
 @@ -53,6 +53,18 @@ pub struct RequestContext {
@@ -1346,7 +1346,22 @@ index 29be37d..b2b8210 100644
      /// 日志标签（如 "Claude"、"Codex"、"Gemini"）
      pub tag: &'static str,
      /// 应用类型字符串（如 "claude"、"codex"、"gemini"）
-@@ -131,22 +143,109 @@ impl RequestContext {
+@@ -107,7 +119,13 @@ impl RequestContext {
+         let optimizer_config = state.db.get_optimizer_config().unwrap_or_default();
+         let copilot_optimizer_config = state.db.get_copilot_optimizer_config().unwrap_or_default();
+ 
+-        let current_provider_id =
++        // ccs 扩展：钉住请求（x-ccs-provider 命中）会把该值覆盖为钉住供应商的 id，
++        // 让转发器成功路径的「开始时当前供应商 != 实际供应商」判定恒为假——
++        // 那个判定是给真实故障转移用的（转移成功后把使用中同步成实际干活的供应商），
++        // 钉住请求不走故障转移链，若不覆盖，ccs 会话每成功一条请求就会把全局
++        // 使用中供应商翻转成钉住供应商（failover_switch → hot_switch_provider 回写
++        // is_current/live/托盘/前端事件）。
++        let mut current_provider_id =
+             crate::settings::get_current_provider(&app_type).unwrap_or_default();
+ 
+         // 从请求体提取模型名称
+@@ -131,22 +149,115 @@ impl RequestContext {
  
          // 使用共享的 ProviderRouter 选择 Provider（熔断器状态跨请求保持）
          // 注意：只在这里调用一次，结果传递给 forwarder，避免重复消耗 HalfOpen 名额
@@ -1381,6 +1396,12 @@ index 29be37d..b2b8210 100644
 +                        provider.id,
 +                        request_model
 +                    );
++                    // 钉住请求的开始时「当前供应商」= 钉住供应商本身：转发器成功路径
++                    // 的 should_switch（current_provider_id_at_start != 实际供应商）
++                    // 随之为假，不再触发 failover_switch 的使用中回写。
++                    // 注意必须在这里覆盖——后面的分类器旁路会把 provider 换成
++                    // claude-safety-bypass 合成供应商，那次替换不参与本语义。
++                    current_provider_id = provider.id.clone();
 +                    Ok(vec![provider])
 +                }
 +                Ok(None) => {
@@ -1466,7 +1487,7 @@ index 29be37d..b2b8210 100644
  
          log::debug!(
              "[{}] Provider: {}, model: {}, failover chain: {} providers, session: {}",
-@@ -165,6 +264,9 @@ impl RequestContext {
+@@ -165,6 +276,9 @@ impl RequestContext {
              current_provider_id,
              request_model,
              outbound_model: None,
