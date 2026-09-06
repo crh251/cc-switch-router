@@ -24,7 +24,217 @@ export LC_ALL=en_US.UTF-8
 
 # 脚本版本：写死为最后一次逻辑修改的时间戳（东八区，形如 20260906_100050）；
 # ccs 逻辑有更新时必须同步改成当时的修改时间（app 关于窗口显示的就是这个版本）
-CCS_VERSION="20260906_153555"
+CCS_VERSION="20260906_161712"
+
+# 官方会话状态栏脚本：物化到 ~/.cc-switch/ccs-statusline.py，官方 settings.json
+# 的 statusLine 指向它。公司托管策略把官方会话插件做成白名单（仅 guardrails，
+# 见 CLAUDE.md 已知 bug 19），claude-hud 加载不了，statusLine 是官方会话的
+# token/context 显示替代。每次启动覆盖写入（与 ccs 版本保持同步）。
+install_statusline() {
+  local dest="${HOME}/.cc-switch/ccs-statusline.py"
+  mkdir -p "${HOME}/.cc-switch"
+  cat > "${dest}.tmp.$$" <<'CSSL'
+#!/usr/bin/env python3
+# ccs-statusline -- one-line status for Claude Code statusLine (installed by ccs).
+# Shows: dir/branch/model, last-turn output tokens, session total tokens
+# (in + out + cache write + cache read, per-message-id dedup like claude-hud),
+# native context percentage (used_percentage, fallback tokens/window), session cost.
+import json, os, subprocess, sys
+
+CACHE = os.path.expanduser("~/.cc-switch/.ccs-statusline-cache.json")
+DEFAULT_WINDOW = 200000
+FIELDS = ("in", "cc", "cr", "out")
+
+def ans(code):
+    return "\033[%dm" % code
+
+def fmt(n):
+    n = int(n)
+    if n < 1000:
+        return str(n)
+    if n < 1000000:
+        s = ("%.1f" % (n / 1000.0)).rstrip("0").rstrip(".")
+        return s + "k"
+    s = ("%.1f" % (n / 1000000.0)).rstrip("0").rstrip(".")
+    return s + "M"
+
+def load_state():
+    try:
+        with open(CACHE) as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) and isinstance(d.get("e"), dict) else {"e": {}}
+    except Exception:
+        return {"e": {}}
+
+def save_state(state):
+    try:
+        entries = state["e"]
+        if len(entries) > 8:
+            for k in sorted(entries, key=lambda k: entries[k].get("t", 0))[:-8]:
+                del entries[k]
+        tmp = CACHE + ".tmp.%d" % os.getpid()
+        with open(tmp, "w") as f:
+            json.dump(state, f)
+        os.replace(tmp, CACHE)
+    except Exception:
+        pass
+
+def process_line(ln, seen, totals):
+    # returns (message_id, usage_tuple) for assistant entries, else None
+    try:
+        d = json.loads(ln)
+    except Exception:
+        return None
+    if not isinstance(d, dict) or d.get("type") != "assistant" or d.get("isSidechain"):
+        return None
+    msg = d.get("message") or {}
+    u = msg.get("usage")
+    if not isinstance(u, dict):
+        return None
+    mid = msg.get("id")
+    if not mid:
+        return None
+    cur = (int(u.get("input_tokens") or 0),
+           int(u.get("cache_creation_input_tokens") or 0),
+           int(u.get("cache_read_input_tokens") or 0),
+           int(u.get("output_tokens") or 0))
+    prior = seen.get(mid)
+    if prior is None:
+        for i in range(4):
+            totals[i] += cur[i]
+    else:
+        for i in range(4):
+            delta = cur[i] - prior[i]
+            if delta > 0:
+                totals[i] += delta
+        cur = tuple(max(prior[i], cur[i]) for i in range(4))
+    seen[mid] = cur
+    return (mid, cur)
+
+def read_stats(tp):
+    # incremental transcript parse; per-path state carries byte offset + running
+    # totals + the most recent message usage (streaming lines repeat the same
+    # message id with growing counts, so dedup must carry across renders)
+    state = load_state()
+    entries = state["e"]
+    ent = entries.get(tp) or {}
+    try:
+        fsize = os.path.getsize(tp)
+    except OSError:
+        return None
+    offset = ent.get("offset", 0)
+    if not isinstance(offset, int) or offset < 0 or offset > fsize:
+        ent, offset = {}, 0
+    totals = list(ent.get("totals") or [0, 0, 0, 0])
+    if not isinstance(totals, list) or len(totals) != 4:
+        totals = [0, 0, 0, 0]
+    seen = {}
+    carried_id = ent.get("id")
+    carried_u = ent.get("u")
+    if isinstance(carried_id, str) and isinstance(carried_u, list) and len(carried_u) == 4:
+        seen[carried_id] = tuple(carried_u)
+    last_mid, last_u4 = carried_id, carried_u
+    try:
+        with open(tp, "rb") as f:
+            if offset:
+                f.seek(offset)
+            raw = f.read()
+    except OSError:
+        return None
+    if not raw.endswith(b"\n"):
+        cut = raw.rfind(b"\n")
+        if cut == -1:
+            new_offset = offset
+            raw = b""
+        else:
+            new_offset = offset + cut + 1
+            raw = raw[:cut + 1]
+    else:
+        new_offset = offset + len(raw)
+    if raw:
+        for ln in raw.decode("utf-8", "replace").splitlines():
+            r = process_line(ln, seen, totals)
+            if r:
+                last_mid, last_u4 = r
+    out_ent = {
+        "offset": new_offset,
+        "totals": totals,
+        "id": last_mid,
+        "u": list(last_u4) if last_u4 else None,
+        "last_out": (last_u4[3] if last_u4 else (ent.get("last_out") or 0)),
+        "t": ent.get("t", 0),
+    }
+    entries[tp] = out_ent
+    save_state(state)
+    return out_ent
+
+def main():
+    try:
+        data = json.load(sys.stdin)
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+
+    model = (data.get("model") or {}).get("display_name") or "claude"
+    ws = data.get("workspace") or {}
+    d = ws.get("current_dir") or data.get("cwd") or os.getcwd()
+
+    out_line = "%s%s%s" % (ans(36), os.path.basename(d) or d, ans(0))
+    branch = ""
+    try:
+        r = subprocess.run(["git", "-C", d, "branch", "--show-current"],
+                           capture_output=True, timeout=2)
+        if r.returncode == 0:
+            branch = r.stdout.decode("utf-8", "replace").strip()
+    except Exception:
+        branch = ""
+    if branch:
+        out_line += " %s⎇ %s%s" % (ans(35), branch, ans(0))
+    out_line += " %s·%s %s%s%s" % (ans(2), ans(0), ans(33), model, ans(0))
+
+    tp = data.get("transcript_path")
+    if isinstance(tp, str) and tp and os.path.isfile(tp):
+        st = read_stats(tp)
+        if st:
+            t = st["totals"]
+            out_line += " %s·%s last %s · total %s" % (
+                ans(2), ans(0), fmt(st.get("last_out") or 0),
+                fmt(t[0] + t[1] + t[2] + t[3]))
+
+    cw = data.get("context_window") or {}
+    cu = cw.get("current_usage") or {}
+    ctx_tok = 0
+    try:
+        ctx_tok = (int(cu.get("input_tokens") or 0)
+                   + int(cu.get("cache_creation_input_tokens") or 0)
+                   + int(cu.get("cache_read_input_tokens") or 0))
+    except Exception:
+        ctx_tok = 0
+    size = cw.get("context_window_size")
+    size = size if isinstance(size, int) and size > 0 else DEFAULT_WINDOW
+    pct = cw.get("used_percentage")
+    if not (isinstance(pct, (int, float)) and pct == pct and pct > 0):
+        pct = (ctx_tok * 100.0 / size) if ctx_tok else 0.0
+    pct = max(0, min(100, int(round(pct))))
+    color = 32 if pct < 60 else (33 if pct < 85 else 31)
+    out_line += " %s·%s %sctx %d%%%s (%s/%s)" % (
+        ans(2), ans(0), ans(color), pct, ans(0), fmt(ctx_tok), fmt(size))
+
+    cost = (data.get("cost") or {}).get("total_cost_usd")
+    if isinstance(cost, (int, float)) and cost == cost and cost >= 0:
+        out_line += " %s·%s $%.2f" % (ans(2), ans(0), cost)
+
+    print(out_line)
+
+try:
+    main()
+except Exception:
+    print("ccs-statusline")
+CSSL
+  mv "${dest}.tmp.$$" "${dest}"
+}
+install_statusline
 
 
 # 准备 per-provider 配置目录（CLAUDE_CONFIG_DIR 重定位）。settings.json 由
@@ -114,6 +324,13 @@ if plugins:
     out["enabledPlugins"] = plugins
 if markets:
     out["extraKnownMarketplaces"] = markets
+# 官方会话状态栏（hud 插件被公司插件白名单挡掉，见已知 bug 19）；
+# 脚本由 ccs 每次启动物化到 ~/.cc-switch/ccs-statusline.py
+out["statusLine"] = {
+    "type": "command",
+    "command": "python3 ${HOME}/.cc-switch/ccs-statusline.py",
+    "padding": 0,
+}
 print(json.dumps(out, indent=2, ensure_ascii=False))
 PY
   else
