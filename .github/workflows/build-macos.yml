@@ -64,6 +64,7 @@ jobs:
           BUILD_TIME=$(TZ=Asia/Shanghai date +%Y%m%d_%H%M%S)
           sed -i '' "s/CCS_VERSION=\"[^\"]*\"/CCS_VERSION=\"${BUILD_TIME}\"/" src/src-tauri/resources/ccs
           echo "SHORT_SHA=$SHORT_SHA" >> "$GITHUB_ENV"
+          echo "BUILD_TIME=$BUILD_TIME" >> "$GITHUB_ENV"
           grep '"version"' src/src-tauri/tauri.conf.json
           grep 'CCS_VERSION=' src/src-tauri/resources/ccs | head -1
 
@@ -100,14 +101,16 @@ jobs:
         working-directory: src
         run: pnpm tauri build --target aarch64-apple-darwin --bundles app
 
-      - name: Stamp commit id into About panel (CFBundleVersion)
+      - name: Stamp commit id + ccs version into About panel (CFBundleVersion)
         run: |
           APP_DIR="src/src-tauri/target/aarch64-apple-darwin/release/bundle/macos"
           PLIST="$APP_DIR/CC Switch Router.app/Contents/Info.plist"
           SHORT_VERSION="${VERSION#v}"
+          # 括号里同时带 commit id 与 ccs 脚本时间戳：关于窗口一处看全两套版本
+          BUNDLE_VERSION="${SHORT_SHA}, ccs ${BUILD_TIME}"
           /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $SHORT_VERSION" "$PLIST"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $SHORT_SHA" "$PLIST"
-          echo "About panel -> Version $SHORT_VERSION ($SHORT_SHA)"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUNDLE_VERSION" "$PLIST"
+          echo "About panel -> Version $SHORT_VERSION+$SHORT_SHA ($BUNDLE_VERSION)"
 
       - name: Pack DMG (create-dmg, official style)
         run: |
