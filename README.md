@@ -60,7 +60,7 @@ ccs kimi -c            # 供应商名后面的参数原样透传给 claude
 ccs help
 ```
 
-- 供应商名 = cc-switch 界面里的名字，**不区分大小写、支持部分匹配**（`ccs glm` 可匹配 glm-router）
+- 供应商名 = cc-switch 界面里的名字，**不区分大小写、支持前缀匹配**（`ccs glm-r` 匹配 glm-router；`ccs glm` 精确优先命中 glm 本身；非前缀的子串如 `lm` 不参与匹配）
 - 依赖：CC Switch Router 运行中且已开启路由接管（启动前脚本会预检 15721 端口）
 - 手动安装（可选）：`install -m 755 ccs ~/script/bin/ccs`
 

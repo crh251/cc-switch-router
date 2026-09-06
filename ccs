@@ -15,7 +15,7 @@
 #   ccs glm-router         # routed -> GLM standard endpoint (auto protocol conversion)
 #   ccs kimi -c            # routed -> Kimi, continue last session
 #
-# Provider name = the name shown in the cc-switch UI (case-insensitive, partial match).
+# Provider name = the name shown in the cc-switch UI (case-insensitive; prefix match).
 set -euo pipefail
 # Prevent bash 3.2 from folding multibyte bytes into variable names under
 # non-UTF-8 locales (fixes "NAME<0xE3>: unbound variable")
@@ -156,11 +156,11 @@ if ! nc -z 127.0.0.1 15721 2>/dev/null; then
 fi
 
 # Resolve the canonical provider name from cc-switch.
-# Matching rules: exact (case-insensitive) wins; otherwise the input must match
-# EXACTLY ONE provider by substring -- multiple hits are an error, since we
-# cannot know which one the user meant. The patched proxy matches the
-# x-ccs-provider header by EXACT name, so the full name is required.
-# 'Claude Official' is excluded: it does not support routing (use bare `ccs`).
+# Matching rules: exact (case-insensitive) wins; otherwise the input must be a
+# PREFIX of EXACTLY ONE provider -- multiple hits are an error, since we
+# cannot know which one the user meant. Non-prefix substrings never match.
+# The patched proxy matches the x-ccs-provider header by EXACT name, so the
+# full canonical name is required. 'Claude Official' is excluded (bare `ccs`).
 DB_CHECK_OK=0
 if command -v sqlite3 >/dev/null 2>&1 && [ -f "$HOME/.cc-switch/cc-switch.db" ]; then
   DB_CHECK_OK=1
@@ -170,7 +170,7 @@ if command -v sqlite3 >/dev/null 2>&1 && [ -f "$HOME/.cc-switch/cc-switch.db" ];
     "SELECT name FROM providers WHERE app_type='claude' AND name = '$SAFE' COLLATE NOCASE AND name <> 'Claude Official' LIMIT 1" 2>/dev/null || true)
   if [ -z "$FULL_NAME" ]; then
     CAND_COUNT=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
-      "SELECT COUNT(*) FROM providers WHERE app_type='claude' AND name LIKE '%'||'$SAFE'||'%' AND name <> 'Claude Official'" 2>/dev/null || echo 0)
+      "SELECT COUNT(*) FROM providers WHERE app_type='claude' AND name LIKE '$SAFE'||'%' AND name <> 'Claude Official'" 2>/dev/null || echo 0)
     if [ "${CAND_COUNT:-0}" = "0" ]; then
       echo "ccs: no Claude provider matching '${NAME}' in cc-switch (name must match the cc-switch UI)" >&2
       exit 1
@@ -178,11 +178,11 @@ if command -v sqlite3 >/dev/null 2>&1 && [ -f "$HOME/.cc-switch/cc-switch.db" ];
     if [ "${CAND_COUNT:-0}" -gt 1 ]; then
       echo "ccs: '${NAME}' matches multiple providers -- be specific:" >&2
       sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
-        "SELECT '  - '||name FROM providers WHERE app_type='claude' AND name LIKE '%'||'$SAFE'||'%' AND name <> 'Claude Official'" >&2 2>/dev/null
+        "SELECT '  - '||name FROM providers WHERE app_type='claude' AND name LIKE '$SAFE'||'%' AND name <> 'Claude Official'" >&2 2>/dev/null
       exit 1
     fi
     FULL_NAME=$(sqlite3 -readonly "$HOME/.cc-switch/cc-switch.db" \
-      "SELECT name FROM providers WHERE app_type='claude' AND name LIKE '%'||'$SAFE'||'%' AND name <> 'Claude Official' LIMIT 1" 2>/dev/null || true)
+      "SELECT name FROM providers WHERE app_type='claude' AND name LIKE '$SAFE'||'%' AND name <> 'Claude Official' LIMIT 1" 2>/dev/null || true)
   fi
 fi
 if [ "$DB_CHECK_OK" = "1" ] && [ -z "$FULL_NAME" ]; then
