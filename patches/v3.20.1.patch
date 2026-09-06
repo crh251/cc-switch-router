@@ -1,6 +1,6 @@
 diff --git a/src-tauri/resources/ccs b/src-tauri/resources/ccs
 new file mode 100644
-index 0000000..65b84b8952045f7df7f097ac8c9fcafe7f9e5374
+index 0000000000000000000000000000000000000000..65b84b8952045f7df7f097ac8c9fcafe7f9e5374
 --- /dev/null
 +++ b/src-tauri/resources/ccs
 @@ -0,0 +1,477 @@
@@ -483,7 +483,7 @@ index 0000000..65b84b8952045f7df7f097ac8c9fcafe7f9e5374
 +fi
 diff --git a/src-tauri/src/ccs_router.rs b/src-tauri/src/ccs_router.rs
 new file mode 100644
-index 0000000..5d422a4
+index 0000000000000000000000000000000000000000..5d422a4a72f21970e6c7f6ddb8c9b941d051703f
 --- /dev/null
 +++ b/src-tauri/src/ccs_router.rs
 @@ -0,0 +1,440 @@
@@ -928,7 +928,7 @@ index 0000000..5d422a4
 +    }
 +}
 diff --git a/src-tauri/src/commands/provider.rs b/src-tauri/src/commands/provider.rs
-index a099c4a..a6b8e23 100644
+index a099c4acbe617fbc5ca80778d09537da1cd6df13..a6b8e23273254a1744a4d099d322834a0280d202 100644
 --- a/src-tauri/src/commands/provider.rs
 +++ b/src-tauri/src/commands/provider.rs
 @@ -48,8 +48,12 @@ pub async fn add_provider(
@@ -979,7 +979,7 @@ index a099c4a..a6b8e23 100644
  
  #[tauri::command]
 diff --git a/src-tauri/src/database/mod.rs b/src-tauri/src/database/mod.rs
-index cdd947e..a6407a3 100644
+index cdd947e7cd7def61320dbadf75634c3f95052342..29e7d61b44d2225c1b483b3c4742d24fc96e451b 100644
 --- a/src-tauri/src/database/mod.rs
 +++ b/src-tauri/src/database/mod.rs
 @@ -53,7 +53,7 @@ use std::sync::Mutex;
@@ -987,24 +987,25 @@ index cdd947e..a6407a3 100644
  /// 当前 Schema 版本号
  /// 每次修改表结构时递增，并在 schema.rs 中添加相应的迁移逻辑
 -pub(crate) const SCHEMA_VERSION: i32 = 18;
-+pub(crate) const SCHEMA_VERSION: i32 = 19;
++pub(crate) const SCHEMA_VERSION: i32 = 20;
  
  /// 安全地序列化 JSON，避免 unwrap panic
  pub(crate) fn to_json_string<T: Serialize>(value: &T) -> Result<String, AppError> {
 diff --git a/src-tauri/src/database/schema.rs b/src-tauri/src/database/schema.rs
-index 0af5d99..dbd9d6c 100644
+index 0af5d99cfe2d91291d3fd2ee54f59821ac20cd2d..1ee7248bde4bf0bab0632e3fdff33c573b245e25 100644
 --- a/src-tauri/src/database/schema.rs
 +++ b/src-tauri/src/database/schema.rs
-@@ -207,7 +207,7 @@ impl Database {
+@@ -207,7 +207,8 @@ impl Database {
              duration_ms INTEGER, status_code INTEGER NOT NULL, error_message TEXT, session_id TEXT,
              provider_type TEXT, is_streaming INTEGER NOT NULL DEFAULT 0,
              cost_multiplier TEXT NOT NULL DEFAULT '1.0', created_at INTEGER NOT NULL,
 -            data_source TEXT NOT NULL DEFAULT 'proxy'
-+            data_source TEXT NOT NULL DEFAULT 'proxy', request_body TEXT
++            data_source TEXT NOT NULL DEFAULT 'proxy', request_body TEXT,
++            request_url TEXT, origin_provider TEXT
          )", []).map_err(|e| AppError::Database(e.to_string()))?;
  
          conn.execute("CREATE INDEX IF NOT EXISTS idx_request_logs_provider ON proxy_request_logs(provider_id, app_type)", [])
-@@ -549,6 +549,11 @@ impl Database {
+@@ -549,6 +550,16 @@ impl Database {
                          Self::migrate_v17_to_v18(conn)?;
                          Self::set_user_version(conn, 18)?;
                      }
@@ -1013,10 +1014,15 @@ index 0af5d99..dbd9d6c 100644
 +                        Self::migrate_v18_to_v19(conn)?;
 +                        Self::set_user_version(conn, 19)?;
 +                    }
++                    19 => {
++                        log::info!("迁移数据库从 v19 到 v20（请求日志增加实际请求 URL 与旁路原供应商列）");
++                        Self::migrate_v19_to_v20(conn)?;
++                        Self::set_user_version(conn, 20)?;
++                    }
                      _ => {
                          return Err(AppError::Database(format!(
                              "未知的数据库版本 {version}，无法迁移到 {SCHEMA_VERSION}"
-@@ -1585,6 +1590,16 @@ impl Database {
+@@ -1585,6 +1596,29 @@ impl Database {
      /// 后继续增量；之后写入字节偏移走 seek 增量，并记录游标边界前的
      /// 尾部指纹用于识别外部重写（截断由 size 检测，同尺寸/更大的替换
      /// 只有指纹能发现）。
@@ -1030,11 +1036,24 @@ index 0af5d99..dbd9d6c 100644
 +        Ok(())
 +    }
 +
++    /// v19 -> v20：proxy_request_logs 增加 request_url / origin_provider 列。
++    /// request_url：实际请求的上游 URL，成功/错误行都落库（分类器审查行
++    /// 在状态列以「模型（URL）」形式展示，与报错行同款）；origin_provider：
++    /// 分类器旁路命中前会话所在的供应商名，前端在 Claude Official 下方显示。
++    fn migrate_v19_to_v20(conn: &Connection) -> Result<(), AppError> {
++        // 缺表的库（异常/测试夹具）跳过：create_tables 会以含列的新 DDL 建表。
++        if Self::table_exists(conn, "proxy_request_logs")? {
++            Self::add_column_if_missing(conn, "proxy_request_logs", "request_url", "TEXT")?;
++            Self::add_column_if_missing(conn, "proxy_request_logs", "origin_provider", "TEXT")?;
++        }
++        Ok(())
++    }
++
      fn migrate_v17_to_v18(conn: &Connection) -> Result<(), AppError> {
          // 缺表的库（异常/测试夹具）跳过：create_tables 会以含列的新 DDL 建表。
          if Self::table_exists(conn, "session_log_sync")? {
 diff --git a/src-tauri/src/lib.rs b/src-tauri/src/lib.rs
-index 36b76cb..9a56bd7 100644
+index 36b76cb6562a9bd142cbf02798f0a1b21576c161..9a56bd7c0ad3ef44f88d7ad7d70c69e5c911c9d7 100644
 --- a/src-tauri/src/lib.rs
 +++ b/src-tauri/src/lib.rs
 @@ -1,6 +1,7 @@
@@ -1077,7 +1096,7 @@ index 36b76cb..9a56bd7 100644
              let skill_service = SkillService::new();
              app.manage(commands::skill::SkillServiceState(Arc::new(skill_service)));
 diff --git a/src-tauri/src/proxy/error_mapper.rs b/src-tauri/src/proxy/error_mapper.rs
-index 777472e..ba098f4 100644
+index 777472ea5059927c009fad7359b10d8f32d1435a..ba098f4c126028a4dc8c0c797e9db03745a23bfc 100644
 --- a/src-tauri/src/proxy/error_mapper.rs
 +++ b/src-tauri/src/proxy/error_mapper.rs
 @@ -86,6 +86,77 @@ pub fn get_error_message(error: &ProxyError) -> String {
@@ -1244,10 +1263,20 @@ index 777472e..ba098f4 100644
 +    }
  }
 diff --git a/src-tauri/src/proxy/forwarder.rs b/src-tauri/src/proxy/forwarder.rs
-index f782210..222e34a 100644
+index f78221066e0557c35236512b1802b40cfe7b4201..87dbc85705d6995395e1b2d4f4bdc27741c1e435 100644
 --- a/src-tauri/src/proxy/forwarder.rs
 +++ b/src-tauri/src/proxy/forwarder.rs
-@@ -115,6 +115,21 @@ pub struct ForwardResult {
+@@ -107,6 +107,9 @@ pub struct ForwardResult {
+     /// usage 归因不能依赖 ctx.request_model（映射前的客户端别名）：上游响应
+     /// 缺失 model 或回显别名时，接管流量会被记成 claude-* 并按其定价计费。
+     pub outbound_model: Option<String>,
++    /// 实际请求的上游 URL（出站前写入 attempt_ctx，成功时随结果带回；
++    /// 错误时走 ForwardError.ctx）。统计行展示用。
++    pub request_url: Option<String>,
+     /// 活跃连接 RAII guard：随响应一起流转到 response_processor / handle_claude_transform，
+     /// 最终被 move 进流式 body future（或非流式响应作用域），覆盖整个响应生命周期。
+     pub(crate) connection_guard: Option<ActiveConnectionGuard>,
+@@ -115,6 +118,21 @@ pub struct ForwardResult {
  pub struct ForwardError {
      pub error: ProxyError,
      pub provider: Option<Provider>,
@@ -1269,7 +1298,7 @@ index f782210..222e34a 100644
  }
  
  /// 活跃连接 RAII guard
-@@ -317,7 +332,7 @@ impl RequestForwarder {
+@@ -317,7 +335,7 @@ impl RequestForwarder {
  
      /// 整流（thinking signature 或 budget）重试失败后的统一收尾。
      ///
@@ -1278,7 +1307,7 @@ index f782210..222e34a 100644
      /// 调用方应 `continue` 让下一家 provider 继续故障转移；
      /// `Some(ForwardError)` 表示是客户端错误，没有 provider 能修复，
      /// 调用方应直接 `return` 把错误返回给客户端。
-@@ -331,6 +346,8 @@ impl RequestForwarder {
+@@ -331,6 +349,8 @@ impl RequestForwarder {
          rectifier_label: &str,
          last_error: &mut Option<ProxyError>,
          last_provider: &mut Option<Provider>,
@@ -1287,7 +1316,7 @@ index f782210..222e34a 100644
      ) -> Option<ForwardError> {
          // Provider 错误：本家上游/网络确实出问题，下一家 provider 可能可用 → 继续故障转移。
          // 客户端错误：整流后请求仍违法，下一家也修不好 → 直接返回。
-@@ -360,6 +377,7 @@ impl RequestForwarder {
+@@ -360,6 +380,7 @@ impl RequestForwarder {
              }
              *last_error = Some(retry_err);
              *last_provider = Some(provider.clone());
@@ -1295,7 +1324,7 @@ index f782210..222e34a 100644
              return None;
          }
  
-@@ -376,6 +394,7 @@ impl RequestForwarder {
+@@ -376,6 +397,7 @@ impl RequestForwarder {
          Some(ForwardError {
              error: retry_err,
              provider: Some(provider.clone()),
@@ -1303,7 +1332,7 @@ index f782210..222e34a 100644
          })
      }
  
-@@ -443,6 +462,7 @@ impl RequestForwarder {
+@@ -443,6 +465,7 @@ impl RequestForwarder {
                  app_type.as_str()
              )),
              provider: None,
@@ -1311,7 +1340,7 @@ index f782210..222e34a 100644
          })?;
          let app_type_str = app_type.as_str();
  
-@@ -450,11 +470,13 @@ impl RequestForwarder {
+@@ -450,11 +473,13 @@ impl RequestForwarder {
              return Err(ForwardError {
                  error: ProxyError::NoAvailableProvider,
                  provider: None,
@@ -1325,7 +1354,7 @@ index f782210..222e34a 100644
          let mut attempted_providers = 0usize;
  
          // 单 Provider 场景下跳过熔断器检查（故障转移关闭时）
-@@ -467,6 +489,8 @@ impl RequestForwarder {
+@@ -467,6 +492,8 @@ impl RequestForwarder {
              let mut rectifier_retried = false;
              let mut budget_rectifier_retried = false;
              let mut media_rectifier_retried = false;
@@ -1334,7 +1363,7 @@ index f782210..222e34a 100644
  
              // 上限检查：尊重用户在 AppProxyConfig.max_retries 上配置的「重试次数」。
              // 放在熔断器 allow 检查之前，避免在已经超限时还占用 HalfOpen 探测名额。
-@@ -535,6 +559,7 @@ impl RequestForwarder {
+@@ -535,6 +562,7 @@ impl RequestForwarder {
                      &headers,
                      &extensions,
                      adapter.as_ref(),
@@ -1342,7 +1371,15 @@ index f782210..222e34a 100644
                  )
                  .await
              {
-@@ -634,6 +659,7 @@ impl RequestForwarder {
+@@ -587,6 +615,7 @@ impl RequestForwarder {
+                         provider: provider.clone(),
+                         claude_api_format,
+                         outbound_model,
++                        request_url: attempt_ctx.url.clone(),
+                         connection_guard: None,
+                     });
+                 }
+@@ -634,6 +663,7 @@ impl RequestForwarder {
                                      &headers,
                                      &extensions,
                                      adapter.as_ref(),
@@ -1350,7 +1387,15 @@ index f782210..222e34a 100644
                                  )
                                  .await
                              {
-@@ -706,6 +732,8 @@ impl RequestForwarder {
+@@ -690,6 +720,7 @@ impl RequestForwarder {
+                                         provider: provider.clone(),
+                                         claude_api_format,
+                                         outbound_model,
++                                        request_url: attempt_ctx.url.clone(),
+                                         connection_guard: None,
+                                     });
+                                 }
+@@ -706,6 +737,8 @@ impl RequestForwarder {
                                              "media 降级",
                                              &mut last_error,
                                              &mut last_provider,
@@ -1359,7 +1404,7 @@ index f782210..222e34a 100644
                                          )
                                          .await
                                      {
-@@ -745,6 +773,7 @@ impl RequestForwarder {
+@@ -745,6 +778,7 @@ impl RequestForwarder {
                                  return Err(ForwardError {
                                      error: e,
                                      provider: Some(provider.clone()),
@@ -1367,7 +1412,7 @@ index f782210..222e34a 100644
                                  });
                              }
  
-@@ -780,6 +809,7 @@ impl RequestForwarder {
+@@ -780,6 +814,7 @@ impl RequestForwarder {
                                          &headers,
                                          &extensions,
                                          adapter.as_ref(),
@@ -1375,7 +1420,15 @@ index f782210..222e34a 100644
                                      )
                                      .await
                                  {
-@@ -855,6 +885,8 @@ impl RequestForwarder {
+@@ -839,6 +874,7 @@ impl RequestForwarder {
+                                             provider: provider.clone(),
+                                             claude_api_format,
+                                             outbound_model,
++                                            request_url: attempt_ctx.url.clone(),
+                                             connection_guard: None,
+                                         });
+                                     }
+@@ -855,6 +891,8 @@ impl RequestForwarder {
                                                  "整流",
                                                  &mut last_error,
                                                  &mut last_provider,
@@ -1384,7 +1437,7 @@ index f782210..222e34a 100644
                                              )
                                              .await
                                          {
-@@ -897,6 +929,7 @@ impl RequestForwarder {
+@@ -897,6 +935,7 @@ impl RequestForwarder {
                                  return Err(ForwardError {
                                      error: e,
                                      provider: Some(provider.clone()),
@@ -1392,7 +1445,7 @@ index f782210..222e34a 100644
                                  });
                              }
  
-@@ -923,6 +956,7 @@ impl RequestForwarder {
+@@ -923,6 +962,7 @@ impl RequestForwarder {
                                  return Err(ForwardError {
                                      error: e,
                                      provider: Some(provider.clone()),
@@ -1400,7 +1453,7 @@ index f782210..222e34a 100644
                                  });
                              }
  
-@@ -946,6 +980,7 @@ impl RequestForwarder {
+@@ -946,6 +986,7 @@ impl RequestForwarder {
                                      &headers,
                                      &extensions,
                                      adapter.as_ref(),
@@ -1408,7 +1461,15 @@ index f782210..222e34a 100644
                                  )
                                  .await
                              {
-@@ -1015,6 +1050,8 @@ impl RequestForwarder {
+@@ -999,6 +1040,7 @@ impl RequestForwarder {
+                                         provider: provider.clone(),
+                                         claude_api_format,
+                                         outbound_model,
++                                        request_url: attempt_ctx.url.clone(),
+                                         connection_guard: None,
+                                     });
+                                 }
+@@ -1015,6 +1057,8 @@ impl RequestForwarder {
                                              "budget 整流",
                                              &mut last_error,
                                              &mut last_provider,
@@ -1417,7 +1478,7 @@ index f782210..222e34a 100644
                                          )
                                          .await
                                      {
-@@ -1045,6 +1082,7 @@ impl RequestForwarder {
+@@ -1045,6 +1089,7 @@ impl RequestForwarder {
                          return Err(ForwardError {
                              error: e,
                              provider: Some(provider.clone()),
@@ -1425,7 +1486,7 @@ index f782210..222e34a 100644
                          });
                      }
  
-@@ -1083,6 +1121,7 @@ impl RequestForwarder {
+@@ -1083,6 +1128,7 @@ impl RequestForwarder {
  
                              last_error = Some(e);
                              last_provider = Some(provider.clone());
@@ -1433,7 +1494,7 @@ index f782210..222e34a 100644
                              // 继续尝试下一个供应商
                              continue;
                          }
-@@ -1108,6 +1147,7 @@ impl RequestForwarder {
+@@ -1108,6 +1154,7 @@ impl RequestForwarder {
                              return Err(ForwardError {
                                  error: e,
                                  provider: Some(provider.clone()),
@@ -1441,7 +1502,7 @@ index f782210..222e34a 100644
                              });
                          }
                      }
-@@ -1129,6 +1169,7 @@ impl RequestForwarder {
+@@ -1129,6 +1176,7 @@ impl RequestForwarder {
              return Err(ForwardError {
                  error: ProxyError::NoAvailableProvider,
                  provider: None,
@@ -1449,7 +1510,7 @@ index f782210..222e34a 100644
              });
          }
  
-@@ -1152,6 +1193,7 @@ impl RequestForwarder {
+@@ -1152,6 +1200,7 @@ impl RequestForwarder {
          Err(ForwardError {
              error: last_error.unwrap_or(ProxyError::MaxRetriesExceeded),
              provider: last_provider,
@@ -1457,7 +1518,7 @@ index f782210..222e34a 100644
          })
      }
  
-@@ -1159,6 +1201,10 @@ impl RequestForwarder {
+@@ -1159,6 +1208,10 @@ impl RequestForwarder {
      ///
      /// 成功时返回 `(response, claude_api_format, outbound_model)`，其中
      /// `outbound_model` 是最终发往上游的模型名（所有映射/改写之后）。
@@ -1468,7 +1529,7 @@ index f782210..222e34a 100644
      #[allow(clippy::too_many_arguments)]
      async fn forward(
          &self,
-@@ -1170,7 +1216,10 @@ impl RequestForwarder {
+@@ -1170,7 +1223,10 @@ impl RequestForwarder {
          headers: &axum::http::HeaderMap,
          extensions: &Extensions,
          adapter: &dyn ProviderAdapter,
@@ -1479,7 +1540,7 @@ index f782210..222e34a 100644
          // 使用适配器提取 base_url
          let mut base_url = adapter.extract_base_url(provider)?;
  
-@@ -1879,6 +1928,39 @@ impl RequestForwarder {
+@@ -1879,6 +1935,39 @@ impl RequestForwarder {
              Vec::new()
          };
  
@@ -1519,7 +1580,7 @@ index f782210..222e34a 100644
          let codex_oauth_session_headers =
              if should_send_codex_oauth_session_headers && self.session_client_provided {
                  build_codex_oauth_session_headers(&self.session_id)
-@@ -2326,6 +2389,15 @@ impl RequestForwarder {
+@@ -2326,6 +2415,15 @@ impl RequestForwarder {
              is_copilot,
          );
  
@@ -1536,19 +1597,29 @@ index f782210..222e34a 100644
          let response = if is_socks_proxy || !preserve_exact_header_case {
              // OpenAI / Copilot / Codex 类后端不依赖原始 header 大小写；走 reqwest
 diff --git a/src-tauri/src/proxy/handler_context.rs b/src-tauri/src/proxy/handler_context.rs
-index 29be37d..74738e6 100644
+index 29be37d7d252eaa696f81f520a7711d8c3426acb..2222883ddba5e512fd51190a9d6bd4370bdabd79 100644
 --- a/src-tauri/src/proxy/handler_context.rs
 +++ b/src-tauri/src/proxy/handler_context.rs
-@@ -53,6 +53,8 @@ pub struct RequestContext {
+@@ -53,6 +53,18 @@ pub struct RequestContext {
      /// usage 归因的兜底顺序：上游响应回显 → outbound_model → request_model。
      /// 不能直接用 request_model 兜底：接管场景下它是映射前的客户端别名。
      pub outbound_model: Option<String>,
 +    /// 分类器审查请求的完整请求体（仅旁路命中时有值，落库供统计悬浮展示）
 +    pub classifier_body: Option<String>,
++    /// 实际请求的上游 URL（成功路径由 ForwardResult 带回、错误路径由
++    /// AttemptContext 带回），统计行展示用；错误行同时以「（URL）」拼进
++    /// error_message，这里落库供成功行（尤其分类器审查 200 行）展示。
++    pub request_url: Option<String>,
++    /// 分类器旁路命中前会话所在的供应商名（如 "sensenova"）。
++    ///
++    /// 旁路把 provider 换成合成的 claude-safety-bypass，统计行的供应商
++    /// 显示成 Claude Official——原始供应商记在这里，前端在 Claude Official
++    /// 下方展示，回答「这次审查是从哪个供应商的会话里触发的」。
++    pub origin_provider: Option<String>,
      /// 日志标签（如 "Claude"、"Codex"、"Gemini"）
      pub tag: &'static str,
      /// 应用类型字符串（如 "claude"、"codex"、"gemini"）
-@@ -131,22 +133,98 @@ impl RequestContext {
+@@ -131,22 +143,101 @@ impl RequestContext {
  
          // 使用共享的 ProviderRouter 选择 Provider（熔断器状态跨请求保持）
          // 注意：只在这里调用一次，结果传递给 forwarder，避免重复消耗 HalfOpen 名额
@@ -1619,54 +1690,59 @@ index 29be37d..74738e6 100644
 +        // 旁路只换出站通道，绝不动 request_model：它必须保持客户端真实请求的模型
 +        // （body.model / Gemini URL path），原样进使用统计的「请求的模型」列；
 +        // 出站模型由转发器按请求体里的 model 映射，与本旁路无关。
-+        let (provider, providers, classifier_body) = if provider.name != "Claude Official"
-+            && crate::safety_bypass::is_safety_classifier_request(&body)
-+        {
-+            if let Some(token) = crate::safety_bypass::get_claude_keychain_token() {
-+                log::info!(
-+                    "[{}] [SafetyBypass] 捕获到 Auto Mode 安全分类审查请求，自动切换为 macOS Keychain 官方直连旁路 (request model: {request_model})",
-+                    tag
-+                );
-+                // 完整请求体落库（截断 100KB）：使用统计的分类器审查行悬浮可看全文
-+                let classifier_body = serde_json::to_string(&body).ok().map(|s| {
-+                    s.chars().take(100_000).collect::<String>()
-+                });
-+                let official = Provider::with_id(
-+                    "claude-safety-bypass".to_string(),
-+                    "Claude Official (Safety Bypass)".to_string(),
-+                    // 凭据必须走 env.ANTHROPIC_AUTH_TOKEN：适配器的 extract_key/
-+                    // extract_base_url 都从 env 读取，顶层 api_key 形状不生效；
-+                    // ANTHROPIC_AUTH_TOKEN 还会命中 ClaudeAuth 策略（Bearer），
-+                    // 正是官方 OAuth access token 需要的认证方式
-+                    serde_json::json!({
-+                        "env": {
-+                            "ANTHROPIC_AUTH_TOKEN": token,
-+                            "ANTHROPIC_BASE_URL": "https://api.anthropic.com"
-+                        }
-+                    }),
-+                    None,
-+                );
-+                let official_for_list = official.clone();
-+                (official, vec![official_for_list], classifier_body)
++        let (provider, providers, classifier_body, origin_provider) =
++            if provider.name != "Claude Official"
++                && crate::safety_bypass::is_safety_classifier_request(&body)
++            {
++                if let Some(token) = crate::safety_bypass::get_claude_keychain_token() {
++                    log::info!(
++                        "[{}] [SafetyBypass] 捕获到 Auto Mode 安全分类审查请求，自动切换为 macOS Keychain 官方直连旁路 (request model: {request_model})",
++                        tag
++                    );
++                    // 记下旁路命中前会话所在的供应商（统计行 Claude Official 下方展示）
++                    let origin_provider = Some(provider.name.clone());
++                    // 完整请求体落库（截断 100KB）：使用统计的分类器审查行悬浮可看全文
++                    let classifier_body = serde_json::to_string(&body).ok().map(|s| {
++                        s.chars().take(100_000).collect::<String>()
++                    });
++                    let official = Provider::with_id(
++                        "claude-safety-bypass".to_string(),
++                        "Claude Official (Safety Bypass)".to_string(),
++                        // 凭据必须走 env.ANTHROPIC_AUTH_TOKEN：适配器的 extract_key/
++                        // extract_base_url 都从 env 读取，顶层 api_key 形状不生效；
++                        // ANTHROPIC_AUTH_TOKEN 还会命中 ClaudeAuth 策略（Bearer），
++                        // 正是官方 OAuth access token 需要的认证方式
++                        serde_json::json!({
++                            "env": {
++                                "ANTHROPIC_AUTH_TOKEN": token,
++                                "ANTHROPIC_BASE_URL": "https://api.anthropic.com"
++                            }
++                        }),
++                        None,
++                    );
++                    let official_for_list = official.clone();
++                    (official, vec![official_for_list], classifier_body, origin_provider)
++                } else {
++                    (provider, providers, None, None)
++                }
 +            } else {
-+                (provider, providers, None)
-+            }
-+        } else {
-+            (provider, providers, None)
-+        };
++                (provider, providers, None, None)
++            };
  
          log::debug!(
              "[{}] Provider: {}, model: {}, failover chain: {} providers, session: {}",
-@@ -165,6 +243,7 @@ impl RequestContext {
+@@ -165,6 +256,9 @@ impl RequestContext {
              current_provider_id,
              request_model,
              outbound_model: None,
 +            classifier_body,
++            request_url: None,
++            origin_provider,
              tag,
              app_type_str,
              app_type,
 diff --git a/src-tauri/src/proxy/handlers.rs b/src-tauri/src/proxy/handlers.rs
-index 0fd6b82..11d33a4 100644
+index 0fd6b8244e15f62d2f436d7e15fe12476dbdce2a..4c9d298b0d13609233c133435d3cefbdcd55f221 100644
 --- a/src-tauri/src/proxy/handlers.rs
 +++ b/src-tauri/src/proxy/handlers.rs
 @@ -9,8 +9,8 @@
@@ -1680,7 +1756,7 @@ index 0fd6b82..11d33a4 100644
      handler_config::{
          claude_stream_usage_event_filter, codex_stream_usage_event_filter, CLAUDE_PARSER_CONFIG,
          CODEX_PARSER_CONFIG, GEMINI_PARSER_CONFIG, OPENAI_PARSER_CONFIG,
-@@ -218,7 +218,7 @@ async fn handle_messages_for_app(
+@@ -218,13 +218,14 @@ async fn handle_messages_for_app(
              if let Some(provider) = err.provider.take() {
                  ctx.provider = provider;
              }
@@ -1689,7 +1765,74 @@ index 0fd6b82..11d33a4 100644
              return Err(err.error);
          }
      };
-@@ -803,7 +803,7 @@ pub async fn handle_chat_completions(
+ 
+     let connection_guard = result.connection_guard.take();
+     ctx.outbound_model = result.outbound_model.take();
++    ctx.request_url = result.request_url.take();
+     ctx.provider = result.provider;
+     let api_format = result
+         .claude_api_format
+@@ -308,6 +309,9 @@ struct ClaudeUsageLog {
+     latency_ms: u64,
+     status_code: u16,
+     is_streaming: bool,
++    request_url: Option<String>,
++    origin_provider: Option<String>,
++    request_body: Option<String>,
+ }
+ 
+ fn prepare_claude_usage_log(
+@@ -341,6 +345,9 @@ fn prepare_claude_usage_log(
+         latency_ms: ctx.latency_ms(),
+         status_code,
+         is_streaming,
++        request_url: ctx.request_url.clone(),
++        origin_provider: ctx.origin_provider.clone(),
++        request_body: ctx.classifier_body.clone(),
+     })
+ }
+ 
+@@ -358,6 +365,9 @@ async fn write_claude_usage_log(state: &ProxyState, log: ClaudeUsageLog) {
+         log.is_streaming,
+         log.status_code,
+         Some(log.session_id),
++        log.request_url,
++        log.origin_provider,
++        log.request_body,
+     )
+     .await;
+ }
+@@ -464,6 +474,9 @@ async fn handle_claude_transform(
+             let status_code = status.as_u16();
+             let start_time = ctx.start_time;
+             let session_id = ctx.session_id.clone();
++            let request_url = ctx.request_url.clone();
++            let origin_provider = ctx.origin_provider.clone();
++            let request_body = ctx.classifier_body.clone();
+             // 用 ctx 的 app_type：Claude Desktop 网关也走此转换路径，硬编码
+             // "claude" 会把 claude-desktop 的行错记到 claude 名下
+             let app_type_str = ctx.app_type_str;
+@@ -484,6 +497,9 @@ async fn handle_claude_transform(
+                         let session_id = session_id.clone();
+                         let request_model = request_model.clone();
+                         let outbound_model = fallback_model.clone();
++                        let request_url = request_url.clone();
++                        let origin_provider = origin_provider.clone();
++                        let request_body = request_body.clone();
+ 
+                         tokio::spawn(async move {
+                             log_usage(
+@@ -499,6 +515,9 @@ async fn handle_claude_transform(
+                                 true,
+                                 status_code,
+                                 Some(session_id),
++                                request_url,
++                                origin_provider,
++                                request_body,
+                             )
+                             .await;
+                         });
+@@ -803,13 +822,14 @@ pub async fn handle_chat_completions(
              if let Some(provider) = err.provider.take() {
                  ctx.provider = provider;
              }
@@ -1698,7 +1841,14 @@ index 0fd6b82..11d33a4 100644
              return build_codex_proxy_error_response(&ctx, &endpoint, &err.error);
          }
      };
-@@ -898,7 +898,7 @@ async fn handle_responses_for_app(
+ 
+     let connection_guard = result.connection_guard.take();
+     ctx.outbound_model = result.outbound_model.take();
++    ctx.request_url = result.request_url.take();
+     ctx.provider = result.provider;
+     let response = result.response;
+ 
+@@ -898,13 +918,14 @@ async fn handle_responses_for_app(
              if let Some(provider) = err.provider.take() {
                  ctx.provider = provider;
              }
@@ -1707,7 +1857,14 @@ index 0fd6b82..11d33a4 100644
              return build_codex_proxy_error_response(&ctx, &endpoint, &err.error);
          }
      };
-@@ -1014,7 +1014,7 @@ pub async fn handle_alpha_search(
+ 
+     let connection_guard = result.connection_guard.take();
+     ctx.outbound_model = result.outbound_model.take();
++    ctx.request_url = result.request_url.take();
+     ctx.provider = result.provider;
+     let response = result.response;
+ 
+@@ -1014,13 +1035,14 @@ pub async fn handle_alpha_search(
              if let Some(provider) = err.provider.take() {
                  ctx.provider = provider;
              }
@@ -1716,7 +1873,14 @@ index 0fd6b82..11d33a4 100644
              return build_codex_proxy_error_response(&ctx, &endpoint, &err.error);
          }
      };
-@@ -1097,7 +1097,7 @@ async fn handle_responses_compact_for_app(
+ 
+     let connection_guard = result.connection_guard.take();
+     ctx.outbound_model = result.outbound_model.take();
++    ctx.request_url = result.request_url.take();
+     ctx.provider = result.provider;
+ 
+     process_response(
+@@ -1097,13 +1119,14 @@ async fn handle_responses_compact_for_app(
              if let Some(provider) = err.provider.take() {
                  ctx.provider = provider;
              }
@@ -1725,7 +1889,134 @@ index 0fd6b82..11d33a4 100644
              return build_codex_proxy_error_response(&ctx, &endpoint, &err.error);
          }
      };
-@@ -2106,7 +2106,7 @@ pub async fn handle_gemini(
+ 
+     let connection_guard = result.connection_guard.take();
+     ctx.outbound_model = result.outbound_model.take();
++    ctx.request_url = result.request_url.take();
+     ctx.provider = result.provider;
+     let response = result.response;
+ 
+@@ -1253,6 +1276,9 @@ async fn handle_codex_responses_namespace_restore(
+                     let provider_id = ctx.provider.id.clone();
+                     let session_id = ctx.session_id.clone();
+                     let latency_ms = ctx.latency_ms();
++                    let request_url = ctx.request_url.clone();
++                    let origin_provider = ctx.origin_provider.clone();
++                    let request_body = ctx.classifier_body.clone();
+                     async move {
+                         log_usage(
+                             &state,
+@@ -1267,6 +1293,9 @@ async fn handle_codex_responses_namespace_restore(
+                             false,
+                             status.as_u16(),
+                             Some(session_id),
++                            request_url,
++                            origin_provider,
++                            request_body,
+                         )
+                         .await;
+                     }
+@@ -1336,6 +1365,9 @@ async fn handle_codex_chat_to_responses_transform(
+             let app_type_str = ctx.app_type_str;
+             let start_time = ctx.start_time;
+             let session_id = ctx.session_id.clone();
++            let request_url = ctx.request_url.clone();
++            let origin_provider = ctx.origin_provider.clone();
++            let request_body = ctx.classifier_body.clone();
+ 
+             Some(SseUsageCollector::new(
+                 start_time,
+@@ -1364,6 +1396,9 @@ async fn handle_codex_chat_to_responses_transform(
+                     let request_model = request_model.clone();
+                     let outbound_model = fallback_model.clone();
+                     let session_id = session_id.clone();
++                    let request_url = request_url.clone();
++                    let origin_provider = origin_provider.clone();
++                    let request_body = request_body.clone();
+ 
+                     tokio::spawn(async move {
+                         log_usage(
+@@ -1379,6 +1414,9 @@ async fn handle_codex_chat_to_responses_transform(
+                             true,
+                             status.as_u16(),
+                             Some(session_id),
++                            request_url,
++                            origin_provider,
++                            request_body,
+                         )
+                         .await;
+                     });
+@@ -1486,6 +1524,9 @@ async fn handle_codex_chat_to_responses_transform(
+             let provider_id = ctx.provider.id.clone();
+             let session_id = ctx.session_id.clone();
+             let latency_ms = ctx.latency_ms();
++            let request_url = ctx.request_url.clone();
++            let origin_provider = ctx.origin_provider.clone();
++            let request_body = ctx.classifier_body.clone();
+             async move {
+                 log_usage(
+                     &state,
+@@ -1500,6 +1541,9 @@ async fn handle_codex_chat_to_responses_transform(
+                     false,
+                     status.as_u16(),
+                     Some(session_id),
++                    request_url,
++                    origin_provider,
++                    request_body,
+                 )
+                 .await;
+             }
+@@ -1651,6 +1695,9 @@ async fn handle_codex_anthropic_to_responses_transform(
+             let provider_id = ctx.provider.id.clone();
+             let session_id = ctx.session_id.clone();
+             let latency_ms = ctx.latency_ms();
++            let request_url = ctx.request_url.clone();
++            let origin_provider = ctx.origin_provider.clone();
++            let request_body = ctx.classifier_body.clone();
+             async move {
+                 log_usage(
+                     &state,
+@@ -1665,6 +1712,9 @@ async fn handle_codex_anthropic_to_responses_transform(
+                     false,
+                     status.as_u16(),
+                     Some(session_id),
++                    request_url,
++                    origin_provider,
++                    request_body,
+                 )
+                 .await;
+             }
+@@ -1715,6 +1765,9 @@ fn build_codex_anthropic_sse_response(
+         let app_type_str = ctx.app_type_str;
+         let start_time = ctx.start_time;
+         let session_id = ctx.session_id.clone();
++        let request_url = ctx.request_url.clone();
++        let origin_provider = ctx.origin_provider.clone();
++        let request_body = ctx.classifier_body.clone();
+ 
+         Some(SseUsageCollector::new(
+             start_time,
+@@ -1737,6 +1790,9 @@ fn build_codex_anthropic_sse_response(
+                 let request_model = request_model.clone();
+                 let outbound_model = fallback_model.clone();
+                 let session_id = session_id.clone();
++                let request_url = request_url.clone();
++                let origin_provider = origin_provider.clone();
++                let request_body = request_body.clone();
+ 
+                 tokio::spawn(async move {
+                     log_usage(
+@@ -1752,6 +1808,9 @@ fn build_codex_anthropic_sse_response(
+                         true,
+                         status.as_u16(),
+                         Some(session_id),
++                        request_url,
++                        origin_provider,
++                        request_body,
+                     )
+                     .await;
+                 });
+@@ -2106,13 +2165,14 @@ pub async fn handle_gemini(
              if let Some(provider) = err.provider.take() {
                  ctx.provider = provider;
              }
@@ -1734,7 +2025,14 @@ index 0fd6b82..11d33a4 100644
              return Err(err.error);
          }
      };
-@@ -2745,19 +2745,37 @@ fn log_forward_error(
+ 
+     let connection_guard = result.connection_guard.take();
+     ctx.outbound_model = result.outbound_model.take();
++    ctx.request_url = result.request_url.take();
+     ctx.provider = result.provider;
+     let response = result.response;
+ 
+@@ -2745,19 +2805,37 @@ fn log_forward_error(
      state: &ProxyState,
      ctx: &RequestContext,
      is_streaming: bool,
@@ -1775,16 +2073,38 @@ index 0fd6b82..11d33a4 100644
          ctx.request_model.clone(),
          status_code,
          error_message,
-@@ -2765,6 +2783,7 @@ fn log_forward_error(
+@@ -2765,6 +2843,9 @@ fn log_forward_error(
          is_streaming,
          Some(ctx.session_id.clone()),
          None,
 +        ctx.classifier_body.clone(),
++        err.ctx.url.clone(),
++        ctx.origin_provider.clone(),
      ) {
          log::warn!("记录失败请求日志失败: {e}");
      }
+@@ -2788,6 +2869,9 @@ async fn log_usage(
+     is_streaming: bool,
+     status_code: u16,
+     session_id: Option<String>,
++    request_url: Option<String>,
++    origin_provider: Option<String>,
++    request_body: Option<String>,
+ ) {
+     use super::usage::logger::UsageLogger;
+ 
+@@ -2823,6 +2907,9 @@ async fn log_usage(
+         session_id,
+         None, // provider_type
+         is_streaming,
++        request_url,
++        origin_provider,
++        request_body,
+     ) {
+         log::warn!("[USG-001] 记录使用量失败: {e}");
+     }
 diff --git a/src-tauri/src/proxy/provider_router.rs b/src-tauri/src/proxy/provider_router.rs
-index 70b35a7..5567ce1 100644
+index 70b35a7d795790a4c172b80be14b30066e73ec91..5567ce1da96ffee87204c98a7f8b85dda7101010 100644
 --- a/src-tauri/src/proxy/provider_router.rs
 +++ b/src-tauri/src/proxy/provider_router.rs
 @@ -130,6 +130,22 @@ impl ProviderRouter {
@@ -1846,47 +2166,181 @@ index 70b35a7..5567ce1 100644
      #[tokio::test]
      #[serial]
      async fn test_failover_enabled_uses_queue_order_ignoring_current() {
+diff --git a/src-tauri/src/proxy/response_processor.rs b/src-tauri/src/proxy/response_processor.rs
+index 45fa41ae5d4f0a2a4566eec8ac8add05721592b5..2c0fb2a0314869c46f969006323b3af1ec9cfd01 100644
+--- a/src-tauri/src/proxy/response_processor.rs
++++ b/src-tauri/src/proxy/response_processor.rs
+@@ -494,6 +494,9 @@ pub(crate) fn create_usage_collector(
+     let stream_parser = parser_config.stream_parser;
+     let model_extractor = parser_config.model_extractor;
+     let session_id = ctx.session_id.clone();
++    let request_url = ctx.request_url.clone();
++    let origin_provider = ctx.origin_provider.clone();
++    let request_body = ctx.classifier_body.clone();
+ 
+     Some(SseUsageCollector::new(
+         start_time,
+@@ -508,6 +511,9 @@ pub(crate) fn create_usage_collector(
+                 let session_id = session_id.clone();
+                 let request_model = request_model.clone();
+                 let outbound_model = fallback_model.clone();
++                let request_url = request_url.clone();
++                let origin_provider = origin_provider.clone();
++                let request_body = request_body.clone();
+ 
+                 tokio::spawn(async move {
+                     log_usage_internal(
+@@ -523,6 +529,9 @@ pub(crate) fn create_usage_collector(
+                         true, // is_streaming
+                         status_code,
+                         Some(session_id),
++                        request_url,
++                        origin_provider,
++                        request_body,
+                     )
+                     .await;
+                 });
+@@ -534,6 +543,9 @@ pub(crate) fn create_usage_collector(
+                 let session_id = session_id.clone();
+                 let request_model = request_model.clone();
+                 let outbound_model = fallback_model.clone();
++                let request_url = request_url.clone();
++                let origin_provider = origin_provider.clone();
++                let request_body = request_body.clone();
+ 
+                 tokio::spawn(async move {
+                     log_usage_internal(
+@@ -549,6 +561,9 @@ pub(crate) fn create_usage_collector(
+                         true, // is_streaming
+                         status_code,
+                         Some(session_id),
++                        request_url,
++                        origin_provider,
++                        request_body,
+                     )
+                     .await;
+                 });
+@@ -587,6 +602,9 @@ fn spawn_log_usage(
+         .unwrap_or_else(|| ctx.request_model.clone());
+     let latency_ms = ctx.latency_ms();
+     let session_id = ctx.session_id.clone();
++    let request_url = ctx.request_url.clone();
++    let origin_provider = ctx.origin_provider.clone();
++    let request_body = ctx.classifier_body.clone();
+ 
+     tokio::spawn(async move {
+         log_usage_internal(
+@@ -602,6 +620,9 @@ fn spawn_log_usage(
+             is_streaming,
+             status_code,
+             Some(session_id),
++            request_url,
++            origin_provider,
++            request_body,
+         )
+         .await;
+     });
+@@ -635,6 +656,9 @@ async fn log_usage_internal(
+     is_streaming: bool,
+     status_code: u16,
+     session_id: Option<String>,
++    request_url: Option<String>,
++    origin_provider: Option<String>,
++    request_body: Option<String>,
+ ) {
+     use super::usage::logger::UsageLogger;
+ 
+@@ -674,6 +698,9 @@ async fn log_usage_internal(
+         session_id,
+         None, // provider_type
+         is_streaming,
++        request_url,
++        origin_provider,
++        request_body,
+     ) {
+         log::warn!("[USG-001] 记录使用量失败: {e}");
+     }
+@@ -1107,6 +1134,9 @@ mod tests {
+             false,
+             200,
+             None,
++            None,
++            None,
++            None,
+         )
+         .await;
+ 
+@@ -1177,6 +1207,9 @@ mod tests {
+             false,
+             200,
+             None,
++            None,
++            None,
++            None,
+         )
+         .await;
+ 
+@@ -1257,6 +1290,9 @@ mod tests {
+             false,
+             200,
+             None,
++            None,
++            None,
++            None,
+         )
+         .await;
+ 
 diff --git a/src-tauri/src/proxy/usage/logger.rs b/src-tauri/src/proxy/usage/logger.rs
-index 7b6362f..ab4a6f5 100644
+index 7b6362ff391f99de32d7cd170d4bf0a5de7b17de..e1006d87f6a0bd678c659cf1e483604854a991a1 100644
 --- a/src-tauri/src/proxy/usage/logger.rs
 +++ b/src-tauri/src/proxy/usage/logger.rs
-@@ -72,6 +72,8 @@ pub struct RequestLog {
+@@ -72,6 +72,13 @@ pub struct RequestLog {
      /// 用 model/request_model 猜——路由接管下三者可能各不相同。
      /// 错误行（未计价）为空字符串。
      pub pricing_model: String,
 +    /// 分类器审查请求的完整请求体（仅 claude-safety-bypass 行有值，悬浮展示用）
 +    pub request_body: Option<String>,
++    /// 实际请求的上游 URL（成功/错误行都落库，统计行展示用）
++    pub request_url: Option<String>,
++    /// 分类器旁路命中前会话所在的供应商名（仅 claude-safety-bypass 行有值，
++    /// 前端在 Claude Official 下方展示）
++    pub origin_provider: Option<String>,
      pub usage: TokenUsage,
      pub cost: Option<CostBreakdown>,
      pub latency_ms: u64,
-@@ -173,8 +175,8 @@ impl<'a> UsageLogger<'a> {
+@@ -173,8 +180,9 @@ impl<'a> UsageLogger<'a> {
                  input_token_semantics,
                  input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd, total_cost_usd,
                  latency_ms, first_token_ms, status_code, error_message, session_id,
 -                provider_type, is_streaming, cost_multiplier, created_at
 -            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)"
-+                provider_type, is_streaming, cost_multiplier, created_at, request_body
-+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)"
++                provider_type, is_streaming, cost_multiplier, created_at, request_body,
++                request_url, origin_provider
++            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)"
          );
          let affected_rows = conn
              .execute(
-@@ -205,6 +207,7 @@ impl<'a> UsageLogger<'a> {
+@@ -205,6 +213,9 @@ impl<'a> UsageLogger<'a> {
                      log.is_streaming as i64,
                      log.cost_multiplier,
                      created_at,
 +                    log.request_body,
++                    log.request_url,
++                    log.origin_provider,
                  ],
              )
              .map_err(|e| AppError::Database(format!("记录请求日志失败: {e}")))?;
-@@ -286,6 +289,7 @@ impl<'a> UsageLogger<'a> {
+@@ -286,6 +297,9 @@ impl<'a> UsageLogger<'a> {
              provider_type: None,
              is_streaming: false,
              cost_multiplier: "1.0".to_string(),
 +            request_body: None,
++            request_url: None,
++            origin_provider: None,
          };
  
          self.log_request(&log)
-@@ -293,7 +297,9 @@ impl<'a> UsageLogger<'a> {
+@@ -293,7 +307,9 @@ impl<'a> UsageLogger<'a> {
  
      /// 记录失败的请求（带更多上下文信息）
      ///
@@ -1897,7 +2351,7 @@ index 7b6362f..ab4a6f5 100644
      #[allow(clippy::too_many_arguments)]
      pub fn log_error_with_context(
          &self,
-@@ -301,14 +307,15 @@ impl<'a> UsageLogger<'a> {
+@@ -301,14 +317,17 @@ impl<'a> UsageLogger<'a> {
          provider_id: String,
          app_type: String,
          model: String,
@@ -1909,47 +2363,78 @@ index 7b6362f..ab4a6f5 100644
          session_id: Option<String>,
          provider_type: Option<String>,
 +        request_body: Option<String>,
++        request_url: Option<String>,
++        origin_provider: Option<String>,
      ) -> Result<(), AppError> {
 -        let request_model = model.clone();
          let log = RequestLog {
              request_id,
              provider_id,
-@@ -327,6 +334,7 @@ impl<'a> UsageLogger<'a> {
+@@ -327,6 +346,9 @@ impl<'a> UsageLogger<'a> {
              provider_type,
              is_streaming,
              cost_multiplier: "1.0".to_string(),
 +            request_body,
++            request_url,
++            origin_provider,
          };
  
          self.log_request(&log)
-@@ -495,6 +503,8 @@ impl<'a> UsageLogger<'a> {
+@@ -459,6 +481,9 @@ impl<'a> UsageLogger<'a> {
+         session_id: Option<String>,
+         provider_type: Option<String>,
+         is_streaming: bool,
++        request_url: Option<String>,
++        origin_provider: Option<String>,
++        request_body: Option<String>,
+     ) -> Result<(), AppError> {
+         let pricing = self.get_model_pricing(&pricing_model)?;
+ 
+@@ -495,6 +520,11 @@ impl<'a> UsageLogger<'a> {
              provider_type,
              is_streaming,
              cost_multiplier: cost_multiplier.to_string(),
-+            // 成功行暂不携带分类器请求体（分类器请求当前全部走错误路径落库）
-+            request_body: None,
++            // 分类器审查行成功时同样落请求体/URL：官方 403 修复后 200 行也存在，
++            // 前端「模型（URL）」展示与错误路径共用这份数据
++            request_body,
++            request_url,
++            origin_provider,
          };
  
          self.log_request(&log)
-@@ -530,6 +540,7 @@ mod tests {
+@@ -530,6 +560,9 @@ mod tests {
              provider_type: Some("codex".to_string()),
              is_streaming: true,
              cost_multiplier: "1".to_string(),
 +            request_body: None,
++            request_url: None,
++            origin_provider: None,
          }
      }
  
-@@ -788,6 +799,7 @@ mod tests {
+@@ -574,6 +607,9 @@ mod tests {
+             None,
+             Some("claude".to_string()),
+             false,
++            None,
++            None,
++            None,
+         )?;
+ 
+         // 验证记录已插入
+@@ -788,6 +824,9 @@ mod tests {
              provider_type: Some("grokbuild".to_string()),
              is_streaming: false,
              cost_multiplier: "1".to_string(),
 +            request_body: None,
++            request_url: None,
++            origin_provider: None,
          };
  
          logger.log_request(&log)?;
 diff --git a/src-tauri/src/safety_bypass.rs b/src-tauri/src/safety_bypass.rs
 new file mode 100644
-index 0000000..09b1149
+index 0000000000000000000000000000000000000000..09b1149b477ce3c3fde3c8157c82da2224b8fa22
 --- /dev/null
 +++ b/src-tauri/src/safety_bypass.rs
 @@ -0,0 +1,166 @@
@@ -2120,70 +2605,83 @@ index 0000000..09b1149
 +    }
 +}
 diff --git a/src-tauri/src/services/usage_stats.rs b/src-tauri/src/services/usage_stats.rs
-index ea227f0..90ac9ea 100644
+index ea227f068854c90402dfda00515ab16c94947fe0..43100727a4c3ed695bc812811d5299466f5e6c59 100644
 --- a/src-tauri/src/services/usage_stats.rs
 +++ b/src-tauri/src/services/usage_stats.rs
-@@ -158,17 +158,20 @@ pub struct RequestLogDetail {
+@@ -158,17 +158,28 @@ pub struct RequestLogDetail {
      /// 写入时实际用于计价的模型名。None = v11 前的历史行，"" = 未计价的错误行。
      #[serde(skip_serializing_if = "Option::is_none")]
      pub pricing_model: Option<String>,
 +    /// 分类器审查请求的完整请求体（仅 claude-safety-bypass 行有值，悬浮展示用）
 +    #[serde(skip_serializing_if = "Option::is_none")]
 +    pub request_body: Option<String>,
++    /// 实际请求的上游 URL（成功/错误行都落库；分类器审查行在状态列展示）
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub request_url: Option<String>,
++    /// 分类器旁路命中前会话所在的供应商名（仅 claude-safety-bypass 行有值，
++    /// 前端在 Claude Official 下方展示）
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub origin_provider: Option<String>,
  }
  
 -/// 把 26 列的查询结果映射为 `RequestLogDetail`。
-+/// 把 27 列的查询结果映射为 `RequestLogDetail`。
++/// 把 29 列的查询结果映射为 `RequestLogDetail`。
  ///
 -/// 调用方的 SELECT **必须**按以下顺序返回 26 列：
-+/// 调用方的 SELECT **必须**按以下顺序返回 27 列：
++/// 调用方的 SELECT **必须**按以下顺序返回 29 列：
  /// `request_id, provider_id, provider_name, app_type, model, request_model,
  ///  cost_multiplier, input_tokens, output_tokens, cache_read_tokens,
  ///  cache_creation_tokens, input_cost_usd, output_cost_usd, cache_read_cost_usd,
  ///  cache_creation_cost_usd, total_cost_usd, is_streaming, latency_ms,
  ///  first_token_ms, duration_ms, status_code, error_message, created_at,
 -///  data_source, pricing_model, input_token_semantics`
-+///  data_source, pricing_model, input_token_semantics, request_body`
++///  data_source, pricing_model, input_token_semantics, request_body,
++///  request_url, origin_provider`
  ///
  /// 不需要 provider_name 时（如 backfill）SELECT `NULL AS provider_name` 占位即可。
  fn row_to_request_log_detail(row: &rusqlite::Row<'_>) -> rusqlite::Result<RequestLogDetail> {
-@@ -201,6 +204,7 @@ fn row_to_request_log_detail(row: &rusqlite::Row<'_>) -> rusqlite::Result<Reques
+@@ -201,6 +212,9 @@ fn row_to_request_log_detail(row: &rusqlite::Row<'_>) -> rusqlite::Result<Reques
          data_source: row.get(23)?,
          pricing_model: row.get(24)?,
          input_token_semantics: row.get::<_, i64>(25)?,
 +        request_body: row.get(26)?,
++        request_url: row.get(27)?,
++        origin_provider: row.get(28)?,
      })
  }
  
-@@ -1623,7 +1627,7 @@ impl Database {
+@@ -1623,7 +1637,8 @@ impl Database {
                      l.input_cost_usd, l.output_cost_usd, l.cache_read_cost_usd, l.cache_creation_cost_usd, l.total_cost_usd,
                      l.is_streaming, l.latency_ms, l.first_token_ms, l.duration_ms,
                      l.status_code, l.error_message, l.created_at, l.data_source, l.pricing_model,
 -                    l.input_token_semantics
-+                    l.input_token_semantics, l.request_body
++                    l.input_token_semantics, l.request_body,
++                    l.request_url, l.origin_provider
               FROM proxy_request_logs l
               LEFT JOIN providers p ON l.provider_id = p.id AND l.app_type = p.app_type
               {where_clause}
-@@ -1667,7 +1671,7 @@ impl Database {
+@@ -1667,7 +1682,8 @@ impl Database {
                      input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd, total_cost_usd,
                      is_streaming, latency_ms, first_token_ms, duration_ms,
                      status_code, error_message, created_at, l.data_source, l.pricing_model,
 -                    l.input_token_semantics
-+                    l.input_token_semantics, l.request_body
++                    l.input_token_semantics, l.request_body,
++                    l.request_url, l.origin_provider
               FROM proxy_request_logs l
               LEFT JOIN providers p ON l.provider_id = p.id AND l.app_type = p.app_type
               WHERE l.request_id = ?"
-@@ -1823,7 +1827,7 @@ impl Database {
+@@ -1823,7 +1839,8 @@ impl Database {
                          input_cost_usd, output_cost_usd, cache_read_cost_usd,
                          cache_creation_cost_usd, total_cost_usd, is_streaming, latency_ms,
                          first_token_ms, duration_ms, status_code, error_message, created_at,
 -                        data_source, pricing_model, input_token_semantics
-+                        data_source, pricing_model, input_token_semantics, request_body
++                        data_source, pricing_model, input_token_semantics, request_body,
++                        request_url, origin_provider
               FROM proxy_request_logs
               WHERE CAST(total_cost_usd AS REAL) <= 0
                 AND (input_tokens > 0 OR output_tokens > 0
 diff --git a/src-tauri/tauri.conf.json b/src-tauri/tauri.conf.json
-index 50aa7a7..df1cf1f 100644
+index 50aa7a79d122d3dfa37fc85a7e11ee2d701bff27..df1cf1fed9219eef48e54b3ae33edab2d29851ac 100644
 --- a/src-tauri/tauri.conf.json
 +++ b/src-tauri/tauri.conf.json
 @@ -1,6 +1,6 @@
@@ -2219,7 +2717,7 @@ index 50aa7a7..df1cf1f 100644
    }
  }
 diff --git a/src/components/usage/RequestLogTable.tsx b/src/components/usage/RequestLogTable.tsx
-index dc7e3da..060d8d5 100644
+index dc7e3da752a8cdd250972c5708a2394f93c209a8..f39c1edd7783dd59259434ec2d4ff2ad6cc56323 100644
 --- a/src/components/usage/RequestLogTable.tsx
 +++ b/src/components/usage/RequestLogTable.tsx
 @@ -196,6 +196,11 @@ export function RequestLogTable({
@@ -2234,7 +2732,7 @@ index dc7e3da..060d8d5 100644
                      return (
                        <TableRow key={log.requestId}>
                          <TableCell className="text-center whitespace-nowrap text-xs px-1.5">
-@@ -210,7 +215,24 @@ export function RequestLogTable({
+@@ -210,7 +215,32 @@ export function RequestLogTable({
                            )}
                          </TableCell>
                          <TableCell className="text-center">
@@ -2253,6 +2751,14 @@ index dc7e3da..060d8d5 100644
 +                              <span className="text-xs text-muted-foreground">
 +                                Claude Official
 +                              </span>
++                              {log.originProvider && (
++                                <span
++                                  className="text-[10px] text-muted-foreground max-w-[120px] truncate"
++                                  title={log.originProvider}
++                                >
++                                  {log.originProvider}
++                                </span>
++                              )}
 +                            </div>
 +                          ) : (
 +                            log.providerName || t("usage.unknownProvider")
@@ -2260,7 +2766,7 @@ index dc7e3da..060d8d5 100644
                          </TableCell>
                          <TableCell className="text-center font-mono text-xs max-w-[200px]">
                            <div
-@@ -308,6 +330,22 @@ export function RequestLogTable({
+@@ -308,6 +338,46 @@ export function RequestLogTable({
                            >
                              {log.statusCode}
                            </span>
@@ -2280,24 +2786,52 @@ index dc7e3da..060d8d5 100644
 +                              请求体: {log.requestBody}
 +                            </div>
 +                          )}
++                          {(() => {
++                            // 分类器审查行无论成败都在状态列补一行「模型（URL）」：
++                            // 200 行没有报错信息可看，模型名取请求体里的原始值
++                            // （requestModel），URL 是旁路实际直连的官方端点，
++                            // 展示形式与报错行（原因 + URL）同款，悬浮看全文。
++                            if (!isSafetyClassifier || !log.requestUrl) {
++                              return null;
++                            }
++                            const model =
++                              log.requestModel || log.model;
++                            const info = log.requestModel &&
++                              log.model &&
++                              log.requestModel !== log.model
++                              ? `${model} → ${log.model}（${log.requestUrl}）`
++                              : `${model}（${log.requestUrl}）`;
++                            return (
++                              <div
++                                className="text-[10px] text-muted-foreground max-w-[180px] truncate mx-auto"
++                                title={info}
++                              >
++                                {info}
++                              </div>
++                            );
++                          })()}
                          </TableCell>
                          <TableCell className="text-center text-xs text-muted-foreground">
                            {log.dataSource || "proxy"}
 diff --git a/src/types/usage.ts b/src/types/usage.ts
-index c9047b7..2888130 100644
+index c9047b7f7fa8aff318e70bd473cd2512fc02b4a0..d854b9494fa151752081d9f45cc8efd33d93c257 100644
 --- a/src/types/usage.ts
 +++ b/src/types/usage.ts
-@@ -34,6 +34,8 @@ export interface RequestLog {
+@@ -34,6 +34,12 @@ export interface RequestLog {
    errorMessage?: string;
    createdAt: number;
    dataSource?: string;
 +  /** 分类器审查请求的完整请求体（仅 claude-safety-bypass 行有值，悬浮查看全文） */
 +  requestBody?: string;
++  /** 实际请求的上游 URL（成功/错误行都落库；分类器审查行在状态列展示） */
++  requestUrl?: string;
++  /** 分类器旁路命中前会话所在的供应商（仅 claude-safety-bypass 行有值，Claude Official 下方显示） */
++  originProvider?: string;
  }
  
  export interface SessionSyncResult {
 diff --git a/tests/components/RequestLogTable.test.tsx b/tests/components/RequestLogTable.test.tsx
-index 62c5178..b6fe18a 100644
+index 62c5178be23692664f179205ec30dcb03011b672..710b33ecc61a30c2c0f30e67a020992b96e75548 100644
 --- a/tests/components/RequestLogTable.test.tsx
 +++ b/tests/components/RequestLogTable.test.tsx
 @@ -9,10 +9,16 @@ vi.mock("react-i18next", () => ({
@@ -2321,7 +2855,7 @@ index 62c5178..b6fe18a 100644
      i18n: {
        resolvedLanguage: "en",
        language: "en",
-@@ -158,4 +164,112 @@ describe("RequestLogTable", () => {
+@@ -158,4 +164,119 @@ describe("RequestLogTable", () => {
        );
      });
    });
@@ -2409,6 +2943,8 @@ index 62c5178..b6fe18a 100644
 +            latencyMs: 900,
 +            statusCode: 200,
 +            createdAt: 1_757_000_000,
++            requestUrl: "https://api.anthropic.com/v1/messages",
++            originProvider: "sensenova",
 +          },
 +        ],
 +        total: 1,
@@ -2432,5 +2968,10 @@ index 62c5178..b6fe18a 100644
 +      expect(screen.getByText("分类器审查")).toBeTruthy();
 +    });
 +    expect(screen.getByText("Claude Official").textContent).toBeTruthy();
++    // 旁路命中前会话所在的供应商显示在 Claude Official 下方
++    expect(screen.getByTitle("sensenova").textContent).toBe("sensenova");
++    // 200 行同样显示「模型（URL）」，形式与报错行同款，全文在 title 悬浮
++    const info = "claude-sonnet-5（https://api.anthropic.com/v1/messages）";
++    expect(screen.getByTitle(info).textContent).toBe(info);
 +  });
  });
